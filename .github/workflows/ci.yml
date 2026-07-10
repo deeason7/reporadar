@@ -1,0 +1,32 @@
+# Zero-warning gate on every push/PR: style, format, types, tests.
+# The test suite needs no external services, so the job stays fast.
+name: ci
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  lint-type-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install with dev tools
+        run: uv sync --extra dev
+
+      - name: Lint (zero-warning policy)
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Type-check (strict)
+        run: uv run mypy
+
+      - name: Tests
+        run: uv run pytest -q
