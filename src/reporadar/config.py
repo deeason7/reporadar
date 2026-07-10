@@ -1,0 +1,50 @@
+"""Runtime configuration.
+
+Every knob comes from the environment (or a local ``.env``); business logic
+never hardcodes paths, tokens, or URLs. New settings must be documented in
+``.env.example`` in the same change.
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Process-wide settings, sourced from the environment / ``.env``."""
+
+    # populate_by_name matters: github_token carries a validation_alias, and
+    # without it pydantic would silently ignore Settings(github_token=...) —
+    # the alias would be required instead. Field names must always work.
+    model_config = SettingsConfigDict(
+        env_prefix="REPORADAR_", env_file=".env", extra="ignore", populate_by_name=True
+    )
+
+    # Accept the conventional GITHUB_TOKEN as well as the prefixed form.
+    github_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("REPORADAR_GITHUB_TOKEN", "GITHUB_TOKEN"),
+    )
+    user_agent: str = "reporadar (independent research project)"
+    api_base: str = "https://api.github.com"
+    archive_base: str = "https://data.gharchive.org"
+    data_dir: Path = Path("data")
+
+    @property
+    def live_dir(self) -> Path:
+        """Where live /events poll samples land (NDJSON)."""
+        return self.data_dir / "raw" / "live"
+
+    @property
+    def archive_dir(self) -> Path:
+        """Where GH Archive hourly files land (.json.gz, exactly as published)."""
+        return self.data_dir / "raw" / "gharchive"
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
