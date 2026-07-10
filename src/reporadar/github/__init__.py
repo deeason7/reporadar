@@ -1,1 +1,1 @@
-"""GitHub event models."""
+"""GitHub API client and event models."""
