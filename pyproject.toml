@@ -25,6 +25,9 @@ dependencies = [
     "duckdb>=1.1,<2.0",
 ]
 
+[project.scripts]
+reporadar = "reporadar.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.2,<10.0",
