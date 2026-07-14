@@ -1,4 +1,4 @@
-.PHONY: setup lint fmt test
+.PHONY: setup lint fmt test up down logs
 
 # One-time dev setup: environment + hooks
 setup:
@@ -17,3 +17,13 @@ fmt:
 
 test:
 	uv run pytest -q
+
+# Local stack (Kafka + TimescaleDB + Grafana); host ports + secrets come from .env
+up:
+	docker compose up -d
+
+down:
+	docker compose down
+
+logs:
+	docker compose logs -f

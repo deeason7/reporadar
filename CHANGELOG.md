@@ -10,3 +10,11 @@ All notable changes to this project are documented here, per
 - Project scaffold: src layout, uv-managed environment, ruff + mypy (strict) + pytest
   zero-warning gate, pre-commit hooks, and CI (lint/type/test).
 - MIT license and security policy.
+- Typed settings (pydantic-settings) and the GitHub public-event envelope, with
+  order-preserving NDJSON parsing and deduplication.
+- ETag-aware, rate-limit-honest GitHub API client.
+- Live `/events` poller and idempotent GH Archive hour downloads.
+- DuckDB archive analysis (event-type histogram and the capture-rate KPI) and the
+  `reporadar` command-line interface.
+- Local development stack (Kafka in KRaft mode, TimescaleDB, Grafana) via docker
+  compose, with a CI job validating the compose file.

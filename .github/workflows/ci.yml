@@ -30,3 +30,13 @@ jobs:
 
       - name: Tests
         run: uv run pytest -q
+
+  compose-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the compose file (syntax + variable resolution)
+        env:
+          POSTGRES_PASSWORD: ci-validate
+          GRAFANA_ADMIN_PASSWORD: ci-validate
+        run: docker compose config -q

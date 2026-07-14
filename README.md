@@ -14,9 +14,11 @@ The core is deliberately boring and statistical: pipelines, reconciliation, base
 calibration. A local-LLM layer will eventually write weekly ecosystem briefs — with a plain
 template fallback, so no model is ever a point of failure.
 
-> **Status:** early scaffold. This repository currently contains the project's packaging,
-> tooling, and CI. Ingestion, analytics, and the local stack land incrementally — the changelog
-> tracks what is actually in place.
+> **Status:** early development. In place today: ingestion foundations (a live `/events`
+> poller with bounded deduplication and run counters, idempotent GH Archive hour downloads),
+> DuckDB archive analysis with the capture-rate calculator behind the `reporadar` CLI, and a
+> local compose stack (Kafka, TimescaleDB, Grafana). The changelog tracks what is actually
+> in place.
 
 ## The honest-ingestion design
 
@@ -53,6 +55,28 @@ make lint test    # zero-warning gate: ruff, mypy --strict, pytest
 ```
 
 Python 3.12; dependencies and the toolchain are managed with [uv](https://docs.astral.sh/uv/).
+
+## Usage
+
+```bash
+reporadar fetch-archive 2026-07-07 15     # download one GH Archive hour (.json.gz)
+reporadar explore data/raw/gharchive/2026-07-07-15.json.gz   # event-type histogram
+reporadar poll --cycles 10 --interval-s 10                   # sample the live /events feed
+reporadar capture-rate <archive.json.gz> <live.ndjson>       # completeness KPI
+```
+
+`capture-rate` is only meaningful when the live sample's window overlaps the archive hour.
+
+## Local stack
+
+Kafka (KRaft), TimescaleDB, and Grafana for local development:
+
+```bash
+cp .env.example .env      # then set POSTGRES_PASSWORD and GRAFANA_ADMIN_PASSWORD
+make up                   # start the stack (host ports are shifted off the defaults)
+make logs                 # follow logs
+make down                 # stop it
+```
 
 ## Compliance
 
