@@ -41,5 +41,7 @@ def settings(tmp_path: Path) -> Settings:
         user_agent="reporadar (test-suite)",
         api_base="https://api.github.com",
         archive_base="https://data.gharchive.org",
+        kafka_bootstrap_servers="kafka.invalid:9092",  # .invalid can never resolve — fails fast
+        kafka_live_topic="raw.events.test",
         data_dir=tmp_path / "data",
     )

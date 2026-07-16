@@ -25,3 +25,6 @@ All notable changes to this project are documented here, per
 - Versioned wire format for events entering the message stream: a JSON envelope carrying
   the schema version and capture time, keyed by repository id so one repository's events
   stay ordered.
+- Kafka producer sink for captured events: messages carry the versioned wire envelope keyed
+  by repository id, with per-batch delivery confirmation; broker address and topic are
+  configurable settings.

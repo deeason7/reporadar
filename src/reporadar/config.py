@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     user_agent: str = "reporadar (independent research project)"
     api_base: str = "https://api.github.com"
     archive_base: str = "https://data.gharchive.org"
+    kafka_bootstrap_servers: str = "localhost:9092"
+    kafka_live_topic: str = "raw.events.live"
     data_dir: Path = Path("data")
 
     @property

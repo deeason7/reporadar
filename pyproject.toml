@@ -20,6 +20,9 @@ dependencies = [
     # CLI entrypoints for ingestion and analysis commands
     "typer>=0.12,<1.0",
 
+    # Async Kafka client — the producer side of the streaming path
+    "aiokafka>=0.11,<0.13",
+
     # In-process analytics — reads gzipped NDJSON archive hours directly,
     # so exploration and reconciliation are single SQL queries, no ETL
     "duckdb>=1.1,<2.0",
@@ -67,4 +70,9 @@ files = ["src", "tests"]
 [[tool.mypy.overrides]]
 # duckdb's Python API doesn't ship complete stubs; contain the gap to this module
 module = "duckdb"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# aiokafka ships no py.typed marker; contain the gap to this module
+module = "aiokafka.*"
 ignore_missing_imports = true
