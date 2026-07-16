@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from typer.testing import CliRunner
 from reporadar import cli
 from reporadar.analysis.capture import CaptureReport
 from reporadar.config import Settings
+from reporadar.ingest.metrics import PollCounters
 
 runner = CliRunner()
 
@@ -106,3 +108,55 @@ def test_poll_forwards_options_and_reports_output(
     assert calls["interval_s"] == 0.0
     assert calls["pages"] == 1
     assert str(out_path) in result.output
+
+
+def test_serve_wires_stream_sink_and_signals(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # serve's own work is composition: build the sink where settings point, translate
+    # --cycles into the loop's max_cycles bound, and run the stream under a live stop
+    # event. The loop is proven in test_service.py, the sink in test_sinks.py, and the
+    # signal handling in test_signals.py; stop_on_signals runs for real here (its
+    # handlers are removed on exit, so nothing leaks out of the test).
+    calls: dict[str, object] = {}
+
+    class FakeSink:
+        def __init__(self, base_dir: Path) -> None:
+            calls["sink_dir"] = base_dir
+
+    async def fake_poll_stream(
+        settings: Settings,
+        sink: object,
+        *,
+        interval_s: float,
+        pages: int,
+        max_cycles: int | None,
+        stop: asyncio.Event,
+    ) -> PollCounters:
+        calls.update(
+            settings=settings,
+            sink=sink,
+            interval_s=interval_s,
+            pages=pages,
+            max_cycles=max_cycles,
+            stop_set=stop.is_set(),
+        )
+        counters = PollCounters()
+        counters.record_cycle(fetched=5, fresh=3)
+        return counters
+
+    monkeypatch.setattr(cli, "HourlyNdjsonSink", FakeSink)
+    monkeypatch.setattr(cli, "poll_stream", fake_poll_stream)
+
+    result = runner.invoke(cli.app, ["serve", "--cycles", "2", "--interval-s", "0", "--pages", "1"])
+
+    assert result.exit_code == 0
+    assert calls["sink_dir"] == pinned_cli_settings.live_dir
+    assert calls["settings"] is pinned_cli_settings
+    assert isinstance(calls["sink"], FakeSink)  # the sink built from settings is the one serving
+    assert calls["max_cycles"] == 2  # --cycles arrives as the loop's bound
+    assert calls["interval_s"] == 0.0
+    assert calls["pages"] == 1
+    assert calls["stop_set"] is False  # a real, un-fired stop event was threaded through
+    assert "stopped:" in result.output
+    assert "'fresh': 3" in result.output  # the final counters surface to the operator

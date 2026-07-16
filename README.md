@@ -15,10 +15,10 @@ calibration. A local-LLM layer will eventually write weekly ecosystem briefs —
 template fallback, so no model is ever a point of failure.
 
 > **Status:** early development. In place today: ingestion foundations (a live `/events`
-> poller with bounded deduplication and run counters, idempotent GH Archive hour downloads),
-> DuckDB archive analysis with the capture-rate calculator behind the `reporadar` CLI, and a
-> local compose stack (Kafka, TimescaleDB, Grafana). The changelog tracks what is actually
-> in place.
+> poller with bounded deduplication and run counters, an always-on capture service writing
+> hourly NDJSON files, idempotent GH Archive hour downloads), DuckDB archive analysis with
+> the capture-rate calculator behind the `reporadar` CLI, and a local compose stack (Kafka,
+> TimescaleDB, Grafana). The changelog tracks what is actually in place.
 
 ## The honest-ingestion design
 
@@ -62,9 +62,12 @@ Python 3.12; dependencies and the toolchain are managed with [uv](https://docs.a
 reporadar fetch-archive 2026-07-07 15     # download one GH Archive hour (.json.gz)
 reporadar explore data/raw/gharchive/2026-07-07-15.json.gz   # event-type histogram
 reporadar poll --cycles 10 --interval-s 10                   # sample the live /events feed
+reporadar serve                                              # always-on capture service
 reporadar capture-rate <archive.json.gz> <live.ndjson>       # completeness KPI
 ```
 
+`serve` polls until stopped, writing fresh events into hourly NDJSON files that mirror the
+archive layout; Ctrl-C or SIGTERM ends the run cleanly after the current cycle.
 `capture-rate` is only meaningful when the live sample's window overlaps the archive hour.
 
 ## Local stack

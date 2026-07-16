@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import date
 from pathlib import Path
 
@@ -11,7 +12,11 @@ import typer
 from reporadar.analysis.capture import capture_rate, type_counts
 from reporadar.config import get_settings
 from reporadar.ingest.archive import download_hour
+from reporadar.ingest.metrics import PollCounters
 from reporadar.ingest.poller import collect_sample
+from reporadar.ingest.service import poll_stream
+from reporadar.ingest.signals import stop_on_signals
+from reporadar.ingest.sinks import HourlyNdjsonSink
 
 app = typer.Typer(help="RepoRadar — ecosystem intelligence tooling", no_args_is_help=True)
 
@@ -42,6 +47,27 @@ def poll(cycles: int = 10, interval_s: float = 10.0, pages: int = 3) -> None:
     settings = get_settings()
     out = asyncio.run(collect_sample(settings, cycles=cycles, interval_s=interval_s, pages=pages))
     typer.echo(f"live sample → {out}")
+
+
+@app.command()
+def serve(cycles: int | None = None, interval_s: float = 10.0, pages: int = 3) -> None:
+    """Run the always-on poller, capturing fresh events to hourly NDJSON files."""
+    # The service's logs are its interface while it runs; the library only ever
+    # emits, so the long-running entrypoint is where logging gets configured.
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    settings = get_settings()
+    sink = HourlyNdjsonSink(settings.live_dir)
+
+    async def _run() -> PollCounters:
+        with stop_on_signals() as stop:  # SIGINT/SIGTERM end the run after the current cycle
+            return await poll_stream(
+                settings, sink, interval_s=interval_s, pages=pages, max_cycles=cycles, stop=stop
+            )
+
+    counters = asyncio.run(_run())
+    typer.echo(f"stopped: {counters.as_dict()}")
 
 
 @app.command(name="capture-rate")
