@@ -1,10 +1,12 @@
-"""Run counters for the ingestion poller — operational empathy (Rule 10).
+"""Run counters for the ingestion pipeline — operational empathy.
 
-A long-running poller has to be observable: how many events it pulled, how many
-survived cross-cycle dedup, how many cycles it lost to rate limiting. These are
-monotonic within a run (they only ever climb), snapshotted for a structured log
-line now and a Prometheus scrape later. Silent failure is the one unforgivable
-production sin, so the poller reports what it actually did.
+A long-running ingester has to be observable: how many events it pulled, how
+many survived dedup, how many cycles it lost to rate limiting, how many messages
+it had to dead-letter. These counters are monotonic within a run (they only ever
+climb), snapshotted for a structured log line now and a Prometheus scrape later
+(``as_dict`` is that seam). ``PollCounters`` covers the live poller (produce
+side); ``ConsumeCounters`` covers the stream consumer (read side). Silent failure
+is the one unforgivable production sin, so each stage reports what it actually did.
 """
 
 from __future__ import annotations
@@ -36,6 +38,38 @@ class PollCounters:
         """Account for one cycle lost to rate limiting (no events fetched)."""
         self.cycles += 1
         self.rate_limited += 1
+
+    def as_dict(self) -> dict[str, int]:
+        """Snapshot including the derived ``duplicates`` — the machine-readable seam."""
+        snapshot = asdict(self)
+        snapshot["duplicates"] = self.duplicates
+        return snapshot
+
+
+@dataclass
+class ConsumeCounters:
+    """Monotonic counters accumulated over one stream-consume run."""
+
+    batches: int = 0  # source batches processed
+    consumed: int = 0  # messages pulled from the source
+    stored: int = 0  # valid, deduped events handed to the store
+    dead_lettered: int = 0  # messages that failed to decode (routed to the DLQ)
+
+    @property
+    def duplicates(self) -> int:
+        """Valid events dropped as already-seen within the run's dedup window.
+
+        Every consumed message is stored, dead-lettered, or a duplicate, so this
+        is what is left over — no separate counter can drift out of sync with it.
+        """
+        return self.consumed - self.stored - self.dead_lettered
+
+    def record_batch(self, *, consumed: int, stored: int, dead_lettered: int) -> None:
+        """Account for one processed source batch."""
+        self.batches += 1
+        self.consumed += consumed
+        self.stored += stored
+        self.dead_lettered += dead_lettered
 
     def as_dict(self) -> dict[str, int]:
         """Snapshot including the derived ``duplicates`` — the machine-readable seam."""
