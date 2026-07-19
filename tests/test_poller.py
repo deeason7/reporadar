@@ -78,7 +78,7 @@ async def test_collect_sample_logs_run_summary(
     with caplog.at_level(logging.INFO, logger="reporadar.ingest.poller"):
         await collect_sample(settings, cycles=2, interval_s=0.0, pages=1)
 
-    # Rule 10: a long-running poller says what it did. Structured, grep-able fields.
+    # A long-running poller says what it did. Structured, grep-able fields.
     assert "poll sample complete" in caplog.text
     assert "cycles=2" in caplog.text
     assert "fetched=4" in caplog.text

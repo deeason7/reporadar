@@ -119,5 +119,5 @@ async def test_poll_stream_logs_progress_and_exit(
     with caplog.at_level(logging.INFO, logger="reporadar.ingest.service"):
         await poll_stream(settings, sink, interval_s=0.0, pages=1, report_every=1, max_cycles=1)
 
-    assert "poll progress" in caplog.text  # periodic report (Rule 10)
+    assert "poll progress" in caplog.text  # a long-running loop reports as it goes
     assert "poll stream stopped" in caplog.text  # final summary on exit

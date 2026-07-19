@@ -26,7 +26,7 @@ async def test_sigterm_sets_the_stop_event(caplog: pytest.LogCaptureFixture) -> 
             os.kill(os.getpid(), signal.SIGTERM)  # intercepted by the loop handler
             await asyncio.wait_for(stop.wait(), timeout=2.0)
 
-    assert "received SIGTERM" in caplog.text  # the stop announces itself (Rule 10)
+    assert "received SIGTERM" in caplog.text  # the stop announces itself
 
 
 async def test_repeated_signal_announces_once(caplog: pytest.LogCaptureFixture) -> None:
