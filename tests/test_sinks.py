@@ -45,6 +45,21 @@ async def test_buckets_events_into_hourly_files_by_event_time(tmp_path: Path) ->
     assert [event.id for event in h16] == ["3"]
 
 
+async def test_hour_bucket_follows_the_instant_not_the_written_offset(tmp_path: Path) -> None:
+    # The buckets exist to line up with GH Archive's UTC hours, so the bucket has to follow
+    # the instant rather than whatever offset the timestamp was written in. 23:30-05:00 is
+    # 04:30Z the *next day* — same moment, different hour and different date. Without the
+    # UTC conversion this files under 2026-07-07-23 and every reconciliation against the
+    # archive reports a capture-rate hole that isn't there.
+    sink = HourlyNdjsonSink(tmp_path)
+
+    await sink([_event("1", "2026-07-07T23:30:00-05:00")])
+
+    h04 = list(iter_ndjson(sink.path_for("2026-07-08-04").read_text(encoding="utf-8").splitlines()))
+    assert [event.id for event in h04] == ["1"]
+    assert not sink.path_for("2026-07-07-23").exists()
+
+
 async def test_appends_across_calls_without_truncating(tmp_path: Path) -> None:
     sink = HourlyNdjsonSink(tmp_path)
 
