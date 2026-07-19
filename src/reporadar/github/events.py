@@ -9,10 +9,9 @@ per-type model earns its keep.
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 
 class Actor(BaseModel):
@@ -38,7 +37,11 @@ class RawEvent(BaseModel):
     type: str
     actor: Actor
     repo: Repo
-    created_at: datetime  # event time, always timezone-aware (UTC from the API)
+    # Aware, not plain datetime: astimezone() reads a naive value as the local time of
+    # whichever machine holds it, so an unmarked timestamp silently becomes a different
+    # instant per deployment — wrong hour file, wrong row, no error. Refusing it here
+    # keeps the guess out of the data; the API and the archive both send UTC anyway.
+    created_at: AwareDatetime  # event time
     public: bool = True
     payload: dict[str, Any] = Field(default_factory=dict)
 
