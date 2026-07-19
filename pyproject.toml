@@ -23,6 +23,10 @@ dependencies = [
     # Async Kafka client — the producer side of the streaming path
     "aiokafka>=0.11,<0.13",
 
+    # Async Postgres driver — the validated store writes to TimescaleDB, which
+    # is Postgres on the wire, so the driver is the only thing the store needs
+    "asyncpg>=0.30,<0.32",
+
     # In-process analytics — reads gzipped NDJSON archive hours directly,
     # so exploration and reconciliation are single SQL queries, no ETL
     "duckdb>=1.1,<2.0",
@@ -75,4 +79,9 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 # aiokafka ships no py.typed marker; contain the gap to this module
 module = "aiokafka.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# asyncpg ships no py.typed marker; contain the gap to this module
+module = "asyncpg.*"
 ignore_missing_imports = true

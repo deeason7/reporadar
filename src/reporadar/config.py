@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, PostgresDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     archive_base: str = "https://data.gharchive.org"
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_live_topic: str = "raw.events.live"
+    # No default: the DSN carries a password, and a wrong-by-default database is
+    # worse than an absent one. Only the store requires it, so it stays optional
+    # here and pg_store() fails loudly when it is missing — polling needs no DB.
+    postgres_dsn: PostgresDsn | None = None
     data_dir: Path = Path("data")
 
     @property

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from reporadar.config import Settings, get_settings
 
@@ -14,6 +15,7 @@ _ENV_VARS = (
     "REPORADAR_ARCHIVE_BASE",
     "REPORADAR_KAFKA_BOOTSTRAP_SERVERS",
     "REPORADAR_KAFKA_LIVE_TOPIC",
+    "REPORADAR_POSTGRES_DSN",
     "REPORADAR_DATA_DIR",
 )
 
@@ -35,7 +37,22 @@ def test_defaults_hold_without_environment() -> None:
     assert settings.archive_base == "https://data.gharchive.org"
     assert settings.kafka_bootstrap_servers == "localhost:9092"  # the compose stack's listener
     assert settings.kafka_live_topic == "raw.events.live"
+    assert settings.postgres_dsn is None  # no default: only the store needs a database
     assert settings.data_dir == Path("data")
+
+
+def test_postgres_dsn_is_parsed_and_a_malformed_one_is_refused_at_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REPORADAR_POSTGRES_DSN", "postgresql://u:p@db.example:5432/reporadar")
+    dsn = Settings().postgres_dsn
+    assert dsn is not None
+    assert str(dsn) == "postgresql://u:p@db.example:5432/reporadar"  # round-trips for the driver
+
+    # A typo becomes a startup error, not a confusing connection failure later.
+    monkeypatch.setenv("REPORADAR_POSTGRES_DSN", "localhost:5432/reporadar")
+    with pytest.raises(ValidationError):
+        Settings()
 
 
 def test_env_prefix_is_respected(monkeypatch: pytest.MonkeyPatch) -> None:
