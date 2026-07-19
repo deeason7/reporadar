@@ -60,6 +60,49 @@ def test_capture_rate_counts_id_overlap(tmp_path: Path) -> None:
     assert report.capture_rate == 0.4
 
 
+def test_capture_rate_is_not_inflated_by_a_repeated_live_id(tmp_path: Path) -> None:
+    # The live file is append-only and the dedup window is bounded in memory, so a
+    # restart re-appends events it has forgotten: the same id lands twice. Counting
+    # rows instead of distinct ids would inflate both the sample size and the join,
+    # reporting 60% capture where the truth is 40% — a plausible, publishable number
+    # that overstates completeness, which is the one thing this KPI exists to rule out.
+    archive = tmp_path / "2026-07-07-15.json.gz"
+    live = tmp_path / "live.ndjson"
+    _write_archive_gz(archive, [_event(str(i)) for i in range(1, 6)])  # ids 1..5
+    _write_ndjson(live, [_event("2"), _event("2"), _event("3")])  # id 2 captured twice
+
+    report = capture_rate(archive, live)
+
+    assert report.live_events == 2  # two distinct ids, not three rows
+    assert report.matched == 2  # the repeat must not join twice either
+    assert report.capture_rate == 0.4
+
+
+def test_capture_rate_is_not_deflated_by_a_repeated_archive_id(tmp_path: Path) -> None:
+    # The mirror image: a duplicated archive row would pad the denominator and
+    # invent a capture hole, sending the next investigation after the poller.
+    archive = tmp_path / "2026-07-07-15.json.gz"
+    live = tmp_path / "live.ndjson"
+    _write_archive_gz(archive, [_event("1"), _event("2"), _event("2")])  # 3 rows, 2 ids
+    _write_ndjson(live, [_event("1"), _event("2")])
+
+    report = capture_rate(archive, live)
+
+    assert report.archive_events == 2  # distinct ids, not rows
+    assert report.capture_rate == 1.0  # we caught the whole hour; say so
+
+
+def test_paths_containing_a_quote_are_escaped(tmp_path: Path) -> None:
+    # The path is interpolated into SQL as a string literal, so an apostrophe in
+    # any parent directory would end the literal early and break the query.
+    quoted_dir = tmp_path / "o'brien"
+    quoted_dir.mkdir()
+    archive = quoted_dir / "2026-07-07-15.json.gz"
+    _write_archive_gz(archive, [_event("1"), _event("2")])
+
+    assert type_counts(archive) == [("PushEvent", 2)]
+
+
 def test_capture_rate_of_empty_archive_is_zero(tmp_path: Path) -> None:
     archive = tmp_path / "2026-07-07-15.json.gz"
     live = tmp_path / "live.ndjson"
