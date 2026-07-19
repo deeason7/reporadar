@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from reporadar.ingest.metrics import PollCounters
+from reporadar.ingest.metrics import ConsumeCounters, PollCounters
 
 
 def test_new_counters_start_at_zero() -> None:
@@ -44,5 +44,22 @@ def test_as_dict_snapshots_all_fields_including_duplicates() -> None:
         "rate_limited": 0,
         "fetched": 5,
         "fresh": 3,
+        "duplicates": 2,
+    }
+
+
+def test_consume_counters_as_dict_snapshots_all_fields_including_duplicates() -> None:
+    # The scrape seam for the consumer: every field, plus the derived duplicates —
+    # a snapshot that silently zeroed or dropped one would poison the metrics
+    # downstream while every direct counter assertion stayed green.
+    c = ConsumeCounters()
+    c.record_batch(consumed=5, stored=3, dead_lettered=1)
+    c.record_batch(consumed=4, stored=2, dead_lettered=1)
+
+    assert c.as_dict() == {
+        "batches": 2,
+        "consumed": 9,
+        "stored": 5,
+        "dead_lettered": 2,
         "duplicates": 2,
     }

@@ -35,8 +35,10 @@ class _CollectStore:
 
     def __init__(self) -> None:
         self.stored: list[WireEnvelope] = []
+        self.calls = 0
 
     async def __call__(self, envelopes: Sequence[WireEnvelope]) -> None:
+        self.calls += 1
         self.stored.extend(envelopes)
 
     @property
@@ -49,8 +51,10 @@ class _CollectDeadLetters:
 
     def __init__(self) -> None:
         self.letters: list[DeadLetter] = []
+        self.calls = 0
 
     async def __call__(self, letters: Sequence[DeadLetter]) -> None:
+        self.calls += 1
         self.letters.extend(letters)
 
 
@@ -208,3 +212,51 @@ async def test_dead_letters_are_logged_not_silent(caplog: pytest.LogCaptureFixtu
 
     assert "dead-lettered" in caplog.text
     assert "corrupt" in caplog.text  # the reason breakdown is visible, not just a count
+
+
+async def test_report_every_zero_disables_progress_reporting(
+    event_dict: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    # The documented off switch: report_every=0 must mean "no progress lines",
+    # not a division by zero on the first batch.
+    source = _BatchSource([_valid(event_dict, "a")], [_valid(event_dict, "b")])
+    store = _CollectStore()
+    dead_letters = _CollectDeadLetters()
+
+    with caplog.at_level(logging.INFO, logger="reporadar.ingest.consumer"):
+        counters = await consume_stream(source, store, dead_letters, report_every=0)
+
+    assert counters.batches == 2  # the run completed
+    assert "consume progress" not in caplog.text
+    assert "consume stream stopped" in caplog.text  # the exit summary is unconditional
+
+
+async def test_a_clean_batch_never_invokes_the_dead_letter_sink(
+    event_dict: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    # The dead-letter sink is for dead letters: on an all-valid batch it must not
+    # be called at all — a concrete sink would pay a broker round-trip per healthy
+    # batch — and no warning may cry wolf about zero failures.
+    source = _BatchSource([_valid(event_dict, "a"), _valid(event_dict, "b")])
+    store = _CollectStore()
+    dead_letters = _CollectDeadLetters()
+
+    with caplog.at_level(logging.WARNING, logger="reporadar.ingest.consumer"):
+        await consume_stream(source, store, dead_letters)
+
+    assert dead_letters.calls == 0
+    assert "dead-lettered" not in caplog.text
+
+
+async def test_an_all_failures_batch_never_invokes_the_store() -> None:
+    # Symmetric: the store is for validated events. A batch with nothing valid
+    # must route to the DLQ without opening a pointless store write.
+    source = _BatchSource([_CORRUPT, _FOREIGN_VERSION])
+    store = _CollectStore()
+    dead_letters = _CollectDeadLetters()
+
+    counters = await consume_stream(source, store, dead_letters)
+
+    assert store.calls == 0
+    assert dead_letters.calls == 1
+    assert counters.dead_lettered == 2
