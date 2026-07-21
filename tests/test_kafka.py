@@ -149,6 +149,7 @@ class FakeConsumer:
         self.init_kwargs = kwargs
         self._batches = iter(batches)
         self.polls = 0
+        self.timeouts: list[int] = []
         self.commits = 0
         self.started = False
         self.stopped = False
@@ -161,6 +162,7 @@ class FakeConsumer:
 
     async def getmany(self, *, timeout_ms: int) -> Mapping[object, Sequence[FakeRecord]]:
         self.polls += 1
+        self.timeouts.append(timeout_ms)
         batch = next(self._batches, ())
         if not batch:
             # A real idle poll parks for up to timeout_ms before returning empty.
@@ -181,6 +183,19 @@ def _wire_record(event_dict: dict[str, Any], id_: str) -> FakeRecord:
 
 def _install(monkeypatch: pytest.MonkeyPatch, consumer: FakeConsumer) -> None:
     monkeypatch.setattr(kafka, "AIOKafkaConsumer", lambda *a, **k: consumer)
+
+
+def _capture_consumers(monkeypatch: pytest.MonkeyPatch) -> list[FakeConsumer]:
+    """Install a consumer type that records how each consumer was constructed."""
+    created: list[FakeConsumer] = []
+
+    def fake_consumer_type(*topics: str, **kwargs: object) -> FakeConsumer:
+        consumer = FakeConsumer(**{**kwargs, "topics": topics})
+        created.append(consumer)
+        return consumer
+
+    monkeypatch.setattr(kafka, "AIOKafkaConsumer", fake_consumer_type)
+    return created
 
 
 async def test_source_yields_consumed_messages_with_their_bytes(
@@ -264,14 +279,7 @@ async def test_a_null_valued_message_is_dead_lettered_not_skipped(
 async def test_factory_wires_settings_and_manages_the_consumer(
     monkeypatch: pytest.MonkeyPatch, settings: Settings
 ) -> None:
-    created: list[FakeConsumer] = []
-
-    def fake_consumer_type(*topics: str, **kwargs: object) -> FakeConsumer:
-        consumer = FakeConsumer(**{**kwargs, "topics": topics})
-        created.append(consumer)
-        return consumer
-
-    monkeypatch.setattr(kafka, "AIOKafkaConsumer", fake_consumer_type)
+    created = _capture_consumers(monkeypatch)
 
     async with kafka_source(settings):
         [consumer] = created
@@ -284,6 +292,82 @@ async def test_factory_wires_settings_and_manages_the_consumer(
     assert consumer.init_kwargs["enable_auto_commit"] is False
     assert consumer.init_kwargs["group_id"] == kafka.CONSUMER_GROUP
     assert consumer.stopped
+
+
+async def test_a_new_group_starts_at_the_beginning_of_the_topic(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    # A group with no committed offsets — the first deploy, or one whose offsets
+    # aged out — has to read the backlog rather than skip it. "latest" is the
+    # dangerous default because it fails *quietly*: the consumer starts, logs
+    # nothing unusual, and simply never stores the events it never saw, which
+    # would make the capture rate this project reports a lie.
+    created = _capture_consumers(monkeypatch)
+
+    async with kafka_source(settings):
+        pass
+
+    assert created[0].init_kwargs["auto_offset_reset"] == "earliest"
+
+
+def test_the_consumer_group_name_is_pinned_not_merely_wired() -> None:
+    # The group name is what the broker files offsets under, so it *is* this
+    # pipeline's memory of what it has already stored. Renaming it in a release
+    # silently erases that memory: the next deploy finds no offsets and, per the
+    # test above, replays the topic from the beginning.
+    #
+    # The literal is deliberate. Asserting it against kafka.CONSUMER_GROUP — as
+    # the wiring test above does, correctly, for a different purpose — pins only
+    # that the constant reaches the consumer; a rename would move both sides
+    # together and the suite would stay green through the outage it caused.
+    assert kafka.CONSUMER_GROUP == "reporadar-store-writer"
+
+
+def test_the_poll_timeout_stays_short_enough_to_honor_a_stop() -> None:
+    # This constant *is* the worst-case delay between SIGTERM and shutdown: the
+    # loop cannot notice a stop until the poll already in flight returns. A range
+    # rather than an equality, because the exact number is a judgement call while
+    # the bounds are not — too low busy-loops an idle topic, too high outlives the
+    # grace period a container runtime allows before it resorts to SIGKILL.
+    assert 100 <= kafka.POLL_TIMEOUT_MS <= 5_000
+
+
+async def test_the_poll_timeout_reaches_the_broker_call(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    # Bounding the constant buys nothing if it never arrives. It has to travel
+    # from the module through the factory into getmany, and an explicit override
+    # has to beat it there — otherwise the knob above is decoration and every
+    # test that sets timeout_ms is quietly testing something else.
+    default = FakeConsumer([FakeRecord(value=b"x")])
+    _install(monkeypatch, default)
+    async with kafka_source(settings) as source:
+        await anext(aiter(source))
+    assert default.timeouts == [kafka.POLL_TIMEOUT_MS]
+
+    overridden = FakeConsumer([FakeRecord(value=b"x")])
+    _install(monkeypatch, overridden)
+    async with kafka_source(settings, timeout_ms=5) as source:
+        await anext(aiter(source))
+    assert overridden.timeouts == [5]
+
+
+async def test_the_source_closes_the_batch_generator_on_the_way_out(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, event_dict: dict[str, Any]
+) -> None:
+    # The generator reads the consumer, so its lifetime has to end inside the
+    # source's rather than whenever the loop's async-generator shutdown reaches
+    # it. Left open, it is a suspended generator holding a stopped consumer, with
+    # a finalizer due to run at an unspecified time on an unspecified loop.
+    consumer = FakeConsumer([_wire_record(event_dict, "a")])
+    _install(monkeypatch, consumer)
+
+    async with kafka_source(settings, timeout_ms=5) as source:
+        batches = aiter(source)
+        await anext(batches)
+
+    with pytest.raises(StopAsyncIteration):
+        await anext(batches)
 
 
 async def test_store_then_commit_end_to_end_through_the_consume_loop(
@@ -391,3 +475,32 @@ async def test_dead_letter_factory_stops_the_producer_when_the_run_crashes(
             raise RuntimeError("consumer crashed mid-run")
 
     assert created[0].stopped  # no producer leak behind a crash
+
+
+async def test_the_three_clients_introduce_themselves_distinctly(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    # Brokers group their metrics and logs by client id, so three clients sharing
+    # one id merge live-produce, dead-letter and consume traffic into a single
+    # indistinguishable stream — precisely when an incident needs them apart.
+    #
+    # Distinctness is the assertion doing the work here. Checking each id against
+    # its own constant is a tautology in the value: it would pass just as happily
+    # with all three constants set to the same string.
+    producers: list[FakeProducer] = []
+
+    def fake_producer_type(**kwargs: object) -> FakeProducer:
+        producer = FakeProducer(**kwargs)
+        producers.append(producer)
+        return producer
+
+    monkeypatch.setattr(kafka, "AIOKafkaProducer", fake_producer_type)
+    consumers = _capture_consumers(monkeypatch)
+
+    async with kafka_sink(settings), kafka_dead_letter_sink(settings), kafka_source(settings):
+        pass
+
+    introductions = [producer.init_kwargs["client_id"] for producer in producers]
+    introductions.append(consumers[0].init_kwargs["client_id"])
+    assert introductions == [kafka.CLIENT_ID, kafka.DLQ_CLIENT_ID, kafka.CONSUMER_CLIENT_ID]
+    assert len(set(introductions)) == 3
