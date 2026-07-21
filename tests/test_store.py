@@ -11,7 +11,7 @@ import pytest
 from reporadar.config import Settings
 from reporadar.github.events import RawEvent
 from reporadar.ingest import store
-from reporadar.ingest.store import PostgresStore, pg_store, row_of
+from reporadar.ingest.store import PostgresStore, create_schema, pg_store, row_of
 from reporadar.ingest.wire import SCHEMA_VERSION, WireEnvelope
 
 CAPTURED_AT = datetime(2026, 7, 16, 15, 30, tzinfo=UTC)
@@ -121,6 +121,41 @@ async def test_a_failed_write_raises_instead_of_returning_quietly(
 
     with pytest.raises(ConnectionError):
         await PostgresStore(FakePool(FailingConnection()))([_envelope(event_dict, "a")])
+
+
+def test_the_schema_ddl_carries_its_load_bearing_clauses() -> None:
+    # These clauses are the contract with TimescaleDB, and the only other thing that
+    # would notice them changing is a live database — which is why they are asserted
+    # here rather than left to the one manual run that happened to work.
+    #
+    # The composite primary key is not a style choice: a hypertable requires its
+    # partitioning column in every unique index, so PRIMARY KEY (event_id) alone
+    # makes create_hypertable fail outright — and it is also the exact index the
+    # insert's ON CONFLICT target needs in order to be idempotent at all.
+    assert "CREATE TABLE IF NOT EXISTS" in store.CREATE_TABLE
+    assert "PRIMARY KEY (event_id, created_at)" in store.CREATE_TABLE
+    # Partition by EVENT time: the dimension every time-series query filters on, and
+    # the column the primary key commits to. Partitioning by captured_at would put
+    # the two in conflict.
+    assert "by_range('created_at')" in store.CREATE_HYPERTABLE
+    # Without if_not_exists, the *second* startup raises "already a hypertable" — so
+    # this clause is the whole of the docstring's "safe on every startup", and its
+    # absence would break every restart rather than the first run.
+    assert "if_not_exists => TRUE" in store.CREATE_HYPERTABLE
+
+
+async def test_the_table_is_created_before_the_hypertable() -> None:
+    # create_hypertable() against a table that does not exist yet fails, so the order
+    # is load-bearing — and it would only ever bite on a *fresh* database, the run
+    # that happens once per deployment and never again in development. Asserting that
+    # both statements ran (any(...)) cannot see the difference; asserting position can.
+    connection = FakeConnection()
+
+    await create_schema(connection)
+
+    table_at = next(i for i, q in enumerate(connection.executed) if "CREATE TABLE" in q)
+    hypertable_at = next(i for i, q in enumerate(connection.executed) if "create_hypertable" in q)
+    assert table_at < hypertable_at
 
 
 async def test_factory_ensures_the_schema_then_serves_a_working_store(
