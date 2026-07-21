@@ -47,6 +47,27 @@ class UnsupportedSchemaVersionError(ValueError):
         self.expected = expected
 
 
+def _loads(data: bytes) -> object:
+    """``json.loads`` with one failure type for "this did not parse" instead of two.
+
+    ``json.loads`` sniffs an encoding from the leading bytes, so a payload that is
+    not decodable text at all — a truncated write, a foreign producer, anything
+    starting with what looks like a byte-order mark — fails as a
+    ``UnicodeDecodeError``. That is a sibling of ``JSONDecodeError`` under
+    ``ValueError``, not a subclass, so it slips past readers catching the parse
+    error and becomes fatal at whatever layer finally handles it.
+
+    A message that is not even text is the most corrupt a message can be, and the
+    least deserving of special handling by every caller. Reporting it as the same
+    parse failure keeps the failure set of the wire contract closed, which is what
+    lets a reader enumerate the ways decoding fails and be right.
+    """
+    try:
+        return json.loads(data)
+    except UnicodeDecodeError as exc:
+        raise json.JSONDecodeError(f"payload is not decodable text: {exc.reason}", "", 0) from exc
+
+
 class WireEnvelope(BaseModel):
     """What actually travels in a message value."""
 
@@ -74,8 +95,13 @@ def encode_key(event: RawEvent) -> bytes:
 
 
 def decode_value(data: bytes) -> WireEnvelope:
-    """Parse and validate a message value, refusing foreign versions loudly."""
-    raw: object = json.loads(data)
+    """Parse and validate a message value, refusing foreign versions loudly.
+
+    Fails as ``json.JSONDecodeError`` (bytes that are not parseable JSON, text or
+    otherwise), ``UnsupportedSchemaVersionError``, or pydantic's
+    ``ValidationError`` — a closed set, so a reader can route every failure.
+    """
+    raw: object = _loads(data)
     version: object = raw.get("v") if isinstance(raw, dict) else None
     if version != SCHEMA_VERSION:
         raise UnsupportedSchemaVersionError(version)
@@ -129,9 +155,11 @@ def decode_dead_letter(data: bytes) -> DeadLetterRecord:
     """Recover a dead-letter message: its triage metadata and original bytes.
 
     The inverse of :func:`encode_dead_letter`, refusing a foreign version loudly
-    — the same contract :func:`decode_value` keeps for the live envelope.
+    — the same contract :func:`decode_value` keeps for the live envelope, down to
+    the closed failure set: a replay tool reading a damaged dead letter gets a
+    parse error, not a surprise.
     """
-    raw: object = json.loads(data)
+    raw: object = _loads(data)
     version = raw.get("v") if isinstance(raw, dict) else None
     if not isinstance(raw, dict) or version != DLQ_SCHEMA_VERSION:
         raise UnsupportedSchemaVersionError(version, expected=DLQ_SCHEMA_VERSION)

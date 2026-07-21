@@ -71,8 +71,12 @@ def _valid(event_dict: dict[str, Any], id_: str, repo_id: int = 2) -> ConsumedMe
     return ConsumedMessage(value=encode_value(event), key=encode_key(event))
 
 
-# The three ways a message fails to decode, mirroring test_wire.
+# The four ways a message fails to decode, mirroring test_wire.
 _CORRUPT = ConsumedMessage(value=b"{not json")
+# Not text at all — the case the base64 dead-letter envelope was designed for, and
+# the one this fixture set was missing: b"{not json" is valid ASCII, so it only ever
+# exercised the JSONDecodeError branch.
+_NOT_TEXT = ConsumedMessage(value=b"\xff\xfe not text at all \x00\x01", key=b"2")
 _FOREIGN_VERSION = ConsumedMessage(value=json.dumps({"v": 2, "frame": {}}).encode())
 _WRONG_SHAPE = ConsumedMessage(
     value=json.dumps({"v": 1, "captured_at": "2026-07-14T18:00:00Z"}).encode()
@@ -120,6 +124,27 @@ async def test_the_store_receives_both_clocks_per_message(event_dict: dict[str, 
 
     assert [envelope.captured_at for envelope in store.stored] == [first, second]
     assert store.stored[0].event.created_at == event_a.created_at  # event time, kept distinct
+
+
+async def test_a_message_that_is_not_text_is_dead_lettered_not_fatal(
+    event_dict: dict[str, Any],
+) -> None:
+    # The poison-pill case, and the worst one: a non-UTF-8 payload that escapes as an
+    # uncaught exception kills the consumer, leaves offsets uncommitted, and is
+    # redelivered on restart — so the same message crashes the process forever and
+    # ingestion stops completely. That is the exact outcome dead-lettering exists to
+    # prevent, so it gets its own test rather than riding along in a list.
+    source = _BatchSource([_valid(event_dict, "a"), _NOT_TEXT, _valid(event_dict, "b")])
+    store = _CollectStore()
+    dead_letters = _CollectDeadLetters()
+
+    counters = await consume_stream(source, store, dead_letters)
+
+    assert store.ids == ["a", "b"]  # the loop kept going past the poison message
+    assert [letter.reason for letter in dead_letters.letters] == ["corrupt"]
+    assert dead_letters.letters[0].message is _NOT_TEXT  # original bytes ride to the DLQ
+    assert counters.dead_lettered == 1
+    assert counters.stored == 2
 
 
 async def test_decode_failures_are_dead_lettered_and_the_stream_survives(

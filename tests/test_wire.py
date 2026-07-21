@@ -92,6 +92,17 @@ def test_corrupt_bytes_raise_json_error() -> None:
         decode_value(b"{not json")
 
 
+def test_bytes_that_are_not_text_raise_json_error_too() -> None:
+    # json.loads sniffs an encoding from the leading bytes, so a payload starting
+    # with a UTF-16 byte-order mark is decoded as UTF-16 and fails as a
+    # UnicodeDecodeError rather than a JSONDecodeError. Callers triage on "this
+    # did not parse", so the wire contract must expose one failure for both — a
+    # message that is not even text is the most corrupt a message can be, and it
+    # must not escape as a type nobody is catching.
+    with pytest.raises(json.JSONDecodeError):
+        decode_value(b"\xff\xfe not text at all \x00\x01")
+
+
 def test_right_version_wrong_shape_is_a_validation_error() -> None:
     # v says 1 but the event is missing — a producer bug, distinct from version skew.
     with pytest.raises(ValidationError):
