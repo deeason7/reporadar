@@ -8,9 +8,12 @@ from pydantic import ValidationError
 
 from reporadar.github.events import RawEvent
 from reporadar.ingest.wire import (
+    DLQ_SCHEMA_VERSION,
     SCHEMA_VERSION,
     UnsupportedSchemaVersionError,
+    decode_dead_letter,
     decode_value,
+    encode_dead_letter,
     encode_key,
     encode_value,
 )
@@ -93,3 +96,43 @@ def test_right_version_wrong_shape_is_a_validation_error() -> None:
     # v says 1 but the event is missing — a producer bug, distinct from version skew.
     with pytest.raises(ValidationError):
         decode_value(json.dumps({"v": 1, "captured_at": "2026-07-14T18:00:00Z"}).encode())
+
+
+def test_dead_letter_round_trips_reason_and_original_bytes() -> None:
+    # The original bytes are exactly what failed to decode, so they may be corrupt
+    # or non-UTF-8; base64 must carry them through a JSON round trip losslessly.
+    original = b"\xff\xfe not valid json at all"
+    record = decode_dead_letter(
+        encode_dead_letter(
+            reason="corrupt", detail="Expecting value: line 1", value=original, key=b"7"
+        )
+    )
+
+    assert record.reason == "corrupt"
+    assert record.detail == "Expecting value: line 1"
+    assert record.value == original  # byte-for-byte, despite the invalid bytes
+    assert record.key == b"7"
+
+
+def test_dead_letter_value_is_self_describing_json() -> None:
+    # A DLQ dump (kcat, a triage script) reads the version and reason from the value.
+    encoded = encode_dead_letter(reason="invalid_shape", detail="x", value=b"{}", key=b"2")
+    raw = json.loads(encoded)
+    assert raw["v"] == DLQ_SCHEMA_VERSION
+    assert raw["reason"] == "invalid_shape"
+    assert isinstance(raw["value"], str)  # base64 text, not raw bytes embedded in JSON
+
+
+def test_dead_letter_preserves_a_missing_key() -> None:
+    # A tombstone has no key; None must round-trip as None, not as empty bytes.
+    encoded = encode_dead_letter(reason="corrupt", detail="", value=b"", key=None)
+    record = decode_dead_letter(encoded)
+    assert record.key is None
+    assert record.value == b""
+
+
+def test_dead_letter_foreign_version_is_refused() -> None:
+    foreign = {"v": 2, "reason": "corrupt", "detail": "", "value": "", "key": None}
+    with pytest.raises(UnsupportedSchemaVersionError) as excinfo:
+        decode_dead_letter(json.dumps(foreign).encode())
+    assert excinfo.value.version == 2

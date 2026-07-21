@@ -15,6 +15,7 @@ _ENV_VARS = (
     "REPORADAR_ARCHIVE_BASE",
     "REPORADAR_KAFKA_BOOTSTRAP_SERVERS",
     "REPORADAR_KAFKA_LIVE_TOPIC",
+    "REPORADAR_KAFKA_DLQ_TOPIC",
     "REPORADAR_POSTGRES_DSN",
     "REPORADAR_DATA_DIR",
 )
@@ -37,6 +38,7 @@ def test_defaults_hold_without_environment() -> None:
     assert settings.archive_base == "https://data.gharchive.org"
     assert settings.kafka_bootstrap_servers == "localhost:9092"  # the compose stack's listener
     assert settings.kafka_live_topic == "raw.events.live"
+    assert settings.kafka_dlq_topic == "raw.events.dlq"
     assert settings.postgres_dsn is None  # no default: only the store needs a database
     assert settings.data_dir == Path("data")
 

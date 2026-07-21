@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     archive_base: str = "https://data.gharchive.org"
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_live_topic: str = "raw.events.live"
+    kafka_dlq_topic: str = "raw.events.dlq"  # undecodable messages, for triage and replay
     # No default: the DSN carries a password, and a wrong-by-default database is
     # worse than an absent one. Only the store requires it, so it stays optional
     # here and pg_store() fails loudly when it is missing — polling needs no DB.

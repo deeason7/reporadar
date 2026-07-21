@@ -39,10 +39,11 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 
 from reporadar.config import Settings
 from reporadar.github.events import RawEvent
-from reporadar.ingest.consumer import ConsumedMessage, MessageSource
-from reporadar.ingest.wire import encode_key, encode_value
+from reporadar.ingest.consumer import ConsumedMessage, DeadLetter, MessageSource
+from reporadar.ingest.wire import encode_dead_letter, encode_key, encode_value
 
 CLIENT_ID = "reporadar-producer"  # how this process introduces itself in broker logs/metrics
+DLQ_CLIENT_ID = "reporadar-dlq-producer"
 CONSUMER_CLIENT_ID = "reporadar-consumer"
 
 # The consumer group is this pipeline's identity to the broker: its committed
@@ -97,6 +98,55 @@ async def kafka_sink(settings: Settings) -> AsyncIterator[KafkaSink]:
     await producer.start()
     try:
         yield KafkaSink(producer, topic=settings.kafka_live_topic)
+    finally:
+        await producer.stop()
+
+
+class KafkaDeadLetterSink:
+    """A ``DeadLetterSink`` producing each dead letter as one message on ``topic``.
+
+    The produce-side mirror of :class:`KafkaSink`: the same pipelined-send-then-
+    barrier shape and the same at-least-once contract (a failed confirmation
+    raises rather than losing the record). The message keeps the original repo-id
+    key, so a repository's poison messages land on the partition its live events
+    do — and the value is the dead-letter envelope (``ingest.wire``), carrying the
+    original bytes plus the triage reason for an operator or a replay tool.
+    """
+
+    def __init__(self, producer: EventProducer, topic: str) -> None:
+        self._producer = producer
+        self._topic = topic
+
+    async def __call__(self, dead_letters: Sequence[DeadLetter]) -> None:
+        deliveries = [
+            await self._producer.send(
+                self._topic,
+                value=encode_dead_letter(
+                    reason=letter.reason,
+                    detail=letter.detail,
+                    value=letter.message.value,
+                    key=letter.message.key,
+                ),
+                key=letter.message.key,
+            )
+            for letter in dead_letters
+        ]
+        await asyncio.gather(*deliveries)
+
+
+@asynccontextmanager
+async def kafka_dead_letter_sink(settings: Settings) -> AsyncIterator[KafkaDeadLetterSink]:
+    """A ready :class:`KafkaDeadLetterSink`: producer started on entry, stopped on exit.
+
+    A producer dedicated to the dead-letter topic — the consume path produces
+    nowhere else — with the same lifecycle guarantee as :func:`kafka_sink`.
+    """
+    producer = AIOKafkaProducer(
+        bootstrap_servers=settings.kafka_bootstrap_servers, client_id=DLQ_CLIENT_ID
+    )
+    await producer.start()
+    try:
+        yield KafkaDeadLetterSink(producer, topic=settings.kafka_dlq_topic)
     finally:
         await producer.stop()
 

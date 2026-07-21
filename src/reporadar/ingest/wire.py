@@ -24,7 +24,9 @@ producer bug) — so dead-letter triage can tell them apart.
 
 from __future__ import annotations
 
+import base64
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
@@ -37,11 +39,12 @@ SCHEMA_VERSION = 1
 class UnsupportedSchemaVersionError(ValueError):
     """The bytes are JSON, but not an envelope version this reader understands."""
 
-    def __init__(self, version: object) -> None:
+    def __init__(self, version: object, *, expected: int = SCHEMA_VERSION) -> None:
         super().__init__(
-            f"unsupported wire schema version {version!r}; this reader speaks v{SCHEMA_VERSION}"
+            f"unsupported wire schema version {version!r}; this reader speaks v{expected}"
         )
         self.version = version
+        self.expected = expected
 
 
 class WireEnvelope(BaseModel):
@@ -77,3 +80,65 @@ def decode_value(data: bytes) -> WireEnvelope:
     if version != SCHEMA_VERSION:
         raise UnsupportedSchemaVersionError(version)
     return WireEnvelope.model_validate(raw)
+
+
+# --- Dead-letter envelope -------------------------------------------------
+# A separate, independently versioned contract for messages that could not be
+# decoded: it wraps the *original* bytes (base64-encoded, because they may be
+# corrupt or non-UTF-8) plus the triage reason, so a dead letter is
+# self-describing for an operator and replayable by a tool.
+
+DLQ_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True)
+class DeadLetterRecord:
+    """A decoded dead-letter message: triage metadata plus the exact original bytes.
+
+    What :func:`decode_dead_letter` returns — a replay tool gets the original
+    ``value`` to re-drive and the ``reason`` to decide whether to.
+    """
+
+    reason: str
+    detail: str
+    value: bytes
+    key: bytes | None
+
+
+def encode_dead_letter(*, reason: str, detail: str, value: bytes, key: bytes | None) -> bytes:
+    """Serialize an undecodable message into a dead-letter value (UTF-8 JSON).
+
+    The original ``value`` and ``key`` are base64-encoded rather than embedded
+    raw: a message reaches the dead-letter queue *because* it failed to decode,
+    so it may be corrupt or non-UTF-8, and base64 is the lossless container that
+    survives a JSON round trip. The envelope is versioned and self-describing
+    like the live one, so a replay tool reads the version, the triage reason, and
+    the exact original bytes from the value alone.
+    """
+    envelope = {
+        "v": DLQ_SCHEMA_VERSION,
+        "reason": reason,
+        "detail": detail,
+        "key": base64.b64encode(key).decode("ascii") if key is not None else None,
+        "value": base64.b64encode(value).decode("ascii"),
+    }
+    return json.dumps(envelope).encode("utf-8")
+
+
+def decode_dead_letter(data: bytes) -> DeadLetterRecord:
+    """Recover a dead-letter message: its triage metadata and original bytes.
+
+    The inverse of :func:`encode_dead_letter`, refusing a foreign version loudly
+    — the same contract :func:`decode_value` keeps for the live envelope.
+    """
+    raw: object = json.loads(data)
+    version = raw.get("v") if isinstance(raw, dict) else None
+    if not isinstance(raw, dict) or version != DLQ_SCHEMA_VERSION:
+        raise UnsupportedSchemaVersionError(version, expected=DLQ_SCHEMA_VERSION)
+    key = raw["key"]
+    return DeadLetterRecord(
+        reason=raw["reason"],
+        detail=raw["detail"],
+        value=base64.b64decode(raw["value"]),
+        key=base64.b64decode(key) if key is not None else None,
+    )

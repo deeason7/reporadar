@@ -10,9 +10,21 @@ import pytest
 from reporadar.config import Settings
 from reporadar.github.events import RawEvent
 from reporadar.ingest import kafka
-from reporadar.ingest.consumer import DeadLetter, consume_stream
-from reporadar.ingest.kafka import KafkaSink, kafka_sink, kafka_source
-from reporadar.ingest.wire import WireEnvelope, decode_value, encode_key, encode_value
+from reporadar.ingest.consumer import ConsumedMessage, DeadLetter, consume_stream
+from reporadar.ingest.kafka import (
+    KafkaDeadLetterSink,
+    KafkaSink,
+    kafka_dead_letter_sink,
+    kafka_sink,
+    kafka_source,
+)
+from reporadar.ingest.wire import (
+    WireEnvelope,
+    decode_dead_letter,
+    decode_value,
+    encode_key,
+    encode_value,
+)
 
 
 class FakeProducer:
@@ -304,3 +316,78 @@ async def test_store_then_commit_end_to_end_through_the_consume_loop(
     # b's store raised, so the loop never came back and b stays uncommitted —
     # it will be redelivered, and the idempotent store will absorb it.
     assert consumer.commits == 1
+
+
+def _dead_letter(reason: str, value: bytes, key: bytes | None) -> DeadLetter:
+    return DeadLetter(message=ConsumedMessage(value=value, key=key), reason=reason, detail="detail")
+
+
+async def test_dead_letter_sink_produces_one_message_per_letter() -> None:
+    producer = FakeProducer()
+    letters = [
+        _dead_letter("corrupt", b"\xff bad bytes", key=b"7"),
+        _dead_letter("invalid_shape", b'{"v": 1}', key=b"2"),
+    ]
+
+    await KafkaDeadLetterSink(producer, topic="raw.events.dlq.test")(letters)
+
+    assert [topic for topic, _, _ in producer.sent] == ["raw.events.dlq.test"] * 2
+    assert [key for _, _, key in producer.sent] == [b"7", b"2"]  # original repo-id keys kept
+    records = [decode_dead_letter(value) for _, value, _ in producer.sent if value is not None]
+    assert [r.reason for r in records] == ["corrupt", "invalid_shape"]
+    assert [r.value for r in records] == [b"\xff bad bytes", b'{"v": 1}']  # originals survive
+
+
+async def test_dead_letter_delivery_failure_surfaces_after_full_handoff() -> None:
+    # Same at-least-once barrier as KafkaSink: every send is handed over before any
+    # confirmation is awaited, so a failed confirmation raises rather than vanishing.
+    producer = FakeProducer()
+    producer.fail_on = {2}
+    letters = [_dead_letter("corrupt", b"x", key=None) for _ in range(3)]
+
+    with pytest.raises(ConnectionError):
+        await KafkaDeadLetterSink(producer, topic="raw.events.dlq.test")(letters)
+
+    assert len(producer.sent) == 3  # all handed over before the barrier
+
+
+async def test_dead_letter_factory_wires_settings_and_manages_the_producer(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    created: list[FakeProducer] = []
+
+    def fake_producer_type(**kwargs: object) -> FakeProducer:
+        producer = FakeProducer(**kwargs)
+        created.append(producer)
+        return producer
+
+    monkeypatch.setattr(kafka, "AIOKafkaProducer", fake_producer_type)
+
+    async with kafka_dead_letter_sink(settings) as sink:
+        [producer] = created
+        assert producer.started and not producer.stopped
+        assert producer.init_kwargs["client_id"] == kafka.DLQ_CLIENT_ID
+        await sink([_dead_letter("corrupt", b"x", key=None)])
+
+    assert producer.stopped  # exit stops (and drains) the dedicated DLQ producer
+    [(topic, _, _)] = producer.sent
+    assert topic == settings.kafka_dlq_topic  # the configured DLQ topic, threaded through
+
+
+async def test_dead_letter_factory_stops_the_producer_when_the_run_crashes(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    created: list[FakeProducer] = []
+
+    def fake_producer_type(**kwargs: object) -> FakeProducer:
+        producer = FakeProducer(**kwargs)
+        created.append(producer)
+        return producer
+
+    monkeypatch.setattr(kafka, "AIOKafkaProducer", fake_producer_type)
+
+    with pytest.raises(RuntimeError):
+        async with kafka_dead_letter_sink(settings):
+            raise RuntimeError("consumer crashed mid-run")
+
+    assert created[0].stopped  # no producer leak behind a crash

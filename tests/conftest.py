@@ -44,6 +44,7 @@ def settings(tmp_path: Path) -> Settings:
         archive_base="https://data.gharchive.org",
         kafka_bootstrap_servers="kafka.invalid:9092",  # .invalid can never resolve — fails fast
         kafka_live_topic="raw.events.test",
+        kafka_dlq_topic="raw.events.dlq.test",
         postgres_dsn=PostgresDsn("postgresql://reporadar:test@db.invalid:5432/reporadar"),
         data_dir=tmp_path / "data",
     )
