@@ -12,11 +12,14 @@ import typer
 from reporadar.analysis.capture import capture_rate, type_counts
 from reporadar.config import get_settings
 from reporadar.ingest.archive import download_hour
-from reporadar.ingest.metrics import PollCounters
+from reporadar.ingest.consumer import consume_stream
+from reporadar.ingest.kafka import kafka_dead_letter_sink, kafka_source
+from reporadar.ingest.metrics import ConsumeCounters, PollCounters
 from reporadar.ingest.poller import collect_sample
 from reporadar.ingest.service import poll_stream
 from reporadar.ingest.signals import stop_on_signals
 from reporadar.ingest.sinks import HourlyNdjsonSink
+from reporadar.ingest.store import pg_store
 
 app = typer.Typer(help="RepoRadar — ecosystem intelligence tooling", no_args_is_help=True)
 
@@ -65,6 +68,40 @@ def serve(cycles: int | None = None, interval_s: float = 10.0, pages: int = 3) -
             return await poll_stream(
                 settings, sink, interval_s=interval_s, pages=pages, max_cycles=cycles, stop=stop
             )
+
+    counters = asyncio.run(_run())
+    typer.echo(f"stopped: {counters.as_dict()}")
+
+
+@app.command()
+def consume(seen_window: int = 50_000, report_every: int = 60) -> None:
+    """Read the event stream into the validated store, dead-lettering what will not decode."""
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    settings = get_settings()
+
+    async def _run() -> ConsumeCounters:
+        with stop_on_signals() as stop:  # SIGINT/SIGTERM end the run before the next pull
+            # Opened outside-in, so they close inside-out. The store goes first
+            # because its missing-DSN check is pure config: a misconfigured run
+            # fails before joining the consumer group and making the broker
+            # rebalance for nothing. The source goes last, so it is the first
+            # thing closed — reading stops before the store and dead-letter topic
+            # it feeds are torn down.
+            async with (
+                pg_store(settings) as store,
+                kafka_dead_letter_sink(settings) as dead_letter,
+                kafka_source(settings) as source,
+            ):
+                return await consume_stream(
+                    source,
+                    store,
+                    dead_letter,
+                    seen_window=seen_window,
+                    report_every=report_every,
+                    stop=stop,
+                )
 
     counters = asyncio.run(_run())
     typer.echo(f"stopped: {counters.as_dict()}")

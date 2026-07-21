@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import date
 from pathlib import Path
 
@@ -10,7 +12,7 @@ from typer.testing import CliRunner
 from reporadar import cli
 from reporadar.analysis.capture import CaptureReport
 from reporadar.config import Settings
-from reporadar.ingest.metrics import PollCounters
+from reporadar.ingest.metrics import ConsumeCounters, PollCounters
 
 runner = CliRunner()
 
@@ -160,3 +162,87 @@ def test_serve_wires_stream_sink_and_signals(
     assert calls["stop_set"] is False  # a real, un-fired stop event was threaded through
     assert "stopped:" in result.output
     assert "'fresh': 3" in result.output  # the final counters surface to the operator
+
+
+def test_consume_wires_source_store_and_dead_letter_sink(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # consume's own work is composition: open the three collaborators from settings,
+    # hand them to the loop with a live stop event, and surface the final counters.
+    # The loop is proven in test_consumer.py and each adapter in its own module's
+    # tests; what belongs here is the wiring — including the open/close order, which
+    # is a deliberate choice and would otherwise be a comment nothing enforces.
+    calls: dict[str, object] = {}
+    order: list[str] = []
+
+    def fake_resource(
+        name: str, resource: object
+    ) -> Callable[[Settings], AbstractAsyncContextManager[object]]:
+        @asynccontextmanager
+        async def factory(settings: Settings) -> AsyncIterator[object]:
+            calls[f"{name}_settings"] = settings
+            order.append(f"open {name}")
+            try:
+                yield resource
+            finally:
+                order.append(f"close {name}")
+
+        return factory
+
+    source, store, dead_letter = object(), object(), object()
+    monkeypatch.setattr(cli, "pg_store", fake_resource("store", store))
+    monkeypatch.setattr(cli, "kafka_dead_letter_sink", fake_resource("dlq", dead_letter))
+    monkeypatch.setattr(cli, "kafka_source", fake_resource("source", source))
+
+    async def fake_consume_stream(
+        source_arg: object,
+        store_arg: object,
+        dead_letter_arg: object,
+        *,
+        seen_window: int,
+        report_every: int,
+        stop: asyncio.Event,
+    ) -> ConsumeCounters:
+        calls.update(
+            source=source_arg,
+            store=store_arg,
+            dead_letter=dead_letter_arg,
+            seen_window=seen_window,
+            report_every=report_every,
+            stop_set=stop.is_set(),
+        )
+        order.append("consume")
+        counters = ConsumeCounters()
+        counters.record_batch(consumed=5, stored=3, dead_lettered=1)
+        return counters
+
+    monkeypatch.setattr(cli, "consume_stream", fake_consume_stream)
+
+    result = runner.invoke(cli.app, ["consume", "--seen-window", "10", "--report-every", "0"])
+
+    assert result.exit_code == 0
+    # every adapter is built from the one pinned Settings, and the objects they
+    # yield are the ones the loop actually receives
+    assert calls["store_settings"] is pinned_cli_settings
+    assert calls["dlq_settings"] is pinned_cli_settings
+    assert calls["source_settings"] is pinned_cli_settings
+    assert calls["source"] is source
+    assert calls["store"] is store
+    assert calls["dead_letter"] is dead_letter
+    assert calls["seen_window"] == 10  # --seen-window sizes the dedup window
+    assert calls["report_every"] == 0  # 0 disables progress logging
+    assert calls["stop_set"] is False  # a real, un-fired stop event was threaded through
+    # the store opens first (its config check fails before the group is joined) and
+    # the source closes first (reading stops before what it feeds is torn down)
+    assert order == [
+        "open store",
+        "open dlq",
+        "open source",
+        "consume",
+        "close source",
+        "close dlq",
+        "close store",
+    ]
+    assert "stopped:" in result.output
+    assert "'stored': 3" in result.output  # the final counters surface to the operator
+    assert "'dead_lettered': 1" in result.output

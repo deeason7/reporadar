@@ -63,11 +63,15 @@ reporadar fetch-archive 2026-07-07 15     # download one GH Archive hour (.json.
 reporadar explore data/raw/gharchive/2026-07-07-15.json.gz   # event-type histogram
 reporadar poll --cycles 10 --interval-s 10                   # sample the live /events feed
 reporadar serve                                              # always-on capture service
+reporadar consume                                            # stream → validated store
 reporadar capture-rate <archive.json.gz> <live.ndjson>       # completeness KPI
 ```
 
 `serve` polls until stopped, writing fresh events into hourly NDJSON files that mirror the
 archive layout; Ctrl-C or SIGTERM ends the run cleanly after the current cycle.
+`consume` is the other half: it reads the stream into the database, sending anything that
+will not decode to the dead-letter topic, and stops on the same signals. It needs the local
+stack running and `REPORADAR_POSTGRES_DSN` set.
 `capture-rate` is only meaningful when the live sample's window overlaps the archive hour.
 
 ## Local stack

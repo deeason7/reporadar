@@ -28,3 +28,12 @@ All notable changes to this project are documented here, per
 - Kafka producer sink for captured events: messages carry the versioned wire envelope keyed
   by repository id, with per-batch delivery confirmation; broker address and topic are
   configurable settings.
+- Stream consumer behind `reporadar consume`: it reads the event stream, validates every
+  message against the versioned wire contract, deduplicates by event id within a bounded
+  window, and writes the surviving events to a TimescaleDB hypertable carrying both the
+  event and capture clocks. Offsets are committed only after a batch is stored and the
+  writes are idempotent by event id, so an interrupted run redelivers without duplicating;
+  progress counters are logged as it goes, and SIGINT/SIGTERM end the run cleanly.
+- Dead-letter routing for messages that cannot be decoded: each is published to a dead-letter
+  topic as a self-describing versioned record carrying the triage reason and the original
+  bytes, so one malformed message is isolated and replayable rather than dropped or fatal.
