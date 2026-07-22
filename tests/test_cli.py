@@ -95,9 +95,15 @@ def test_poll_forwards_options_and_reports_output(
     calls: dict[str, object] = {}
 
     async def fake_collect_sample(
-        settings: Settings, *, cycles: int, interval_s: float, pages: int
+        settings: Settings, *, cycles: int, interval_s: float, pages: int, seen_window: int
     ) -> Path:
-        calls.update(settings=settings, cycles=cycles, interval_s=interval_s, pages=pages)
+        calls.update(
+            settings=settings,
+            cycles=cycles,
+            interval_s=interval_s,
+            pages=pages,
+            seen_window=seen_window,
+        )
         return out_path
 
     monkeypatch.setattr(cli, "collect_sample", fake_collect_sample)
@@ -109,6 +115,8 @@ def test_poll_forwards_options_and_reports_output(
     assert calls["cycles"] == 2
     assert calls["interval_s"] == 0.0
     assert calls["pages"] == 1
+    # the configured window, not the library default — the command resolves it
+    assert calls["seen_window"] == pinned_cli_settings.seen_window == 1_000
     assert str(out_path) in result.output
 
 
@@ -132,6 +140,7 @@ def test_serve_wires_stream_sink_and_signals(
         *,
         interval_s: float,
         pages: int,
+        seen_window: int,
         max_cycles: int | None,
         stop: asyncio.Event,
     ) -> PollCounters:
@@ -140,6 +149,7 @@ def test_serve_wires_stream_sink_and_signals(
             sink=sink,
             interval_s=interval_s,
             pages=pages,
+            seen_window=seen_window,
             max_cycles=max_cycles,
             stop_set=stop.is_set(),
         )
@@ -159,6 +169,9 @@ def test_serve_wires_stream_sink_and_signals(
     assert calls["max_cycles"] == 2  # --cycles arrives as the loop's bound
     assert calls["interval_s"] == 0.0
     assert calls["pages"] == 1
+    # the always-on loop is the one this setting exists for: a deployment sizes
+    # its dedup window by environment, without a flag on every restart
+    assert calls["seen_window"] == pinned_cli_settings.seen_window == 1_000
     assert calls["stop_set"] is False  # a real, un-fired stop event was threaded through
     assert "stopped:" in result.output
     assert "'fresh': 3" in result.output  # the final counters surface to the operator
@@ -246,3 +259,46 @@ def test_consume_wires_source_store_and_dead_letter_sink(
     assert "stopped:" in result.output
     assert "'stored': 3" in result.output  # the final counters surface to the operator
     assert "'dead_lettered': 1" in result.output
+
+
+def test_the_configured_seen_window_applies_when_the_flag_is_absent(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # The flag overrides the setting, and the test above passes --seen-window, so
+    # without this one nothing reaches the setting at all: the loop would still be
+    # handed the library default and every assertion would stay green. The pinned
+    # fixture value is deliberately not 50_000, so this can only pass by the
+    # configured window actually arriving.
+    calls: dict[str, object] = {}
+
+    def fake_resource(
+        resource: object,
+    ) -> Callable[[Settings], AbstractAsyncContextManager[object]]:
+        @asynccontextmanager
+        async def factory(settings: Settings) -> AsyncIterator[object]:
+            yield resource
+
+        return factory
+
+    monkeypatch.setattr(cli, "pg_store", fake_resource(object()))
+    monkeypatch.setattr(cli, "kafka_dead_letter_sink", fake_resource(object()))
+    monkeypatch.setattr(cli, "kafka_source", fake_resource(object()))
+
+    async def fake_consume_stream(
+        source_arg: object,
+        store_arg: object,
+        dead_letter_arg: object,
+        *,
+        seen_window: int,
+        report_every: int,
+        stop: asyncio.Event,
+    ) -> ConsumeCounters:
+        calls["seen_window"] = seen_window
+        return ConsumeCounters()
+
+    monkeypatch.setattr(cli, "consume_stream", fake_consume_stream)
+
+    result = runner.invoke(cli.app, ["consume", "--report-every", "0"])
+
+    assert result.exit_code == 0
+    assert calls["seen_window"] == pinned_cli_settings.seen_window == 1_000

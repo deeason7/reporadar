@@ -37,3 +37,7 @@ All notable changes to this project are documented here, per
 - Dead-letter routing for messages that cannot be decoded: each is published to a dead-letter
   topic as a self-describing versioned record carrying the triage reason and the original
   bytes, so one malformed message is isolated and replayable rather than dropped or fatal.
+- Configurable deduplication window (`REPORADAR_SEEN_WINDOW`): how many recent event ids the
+  poll and consume loops remember before an id counts as fresh again. It trades memory against
+  the duplication horizon, so a deployment can size it to its own traffic from the environment
+  rather than passing a flag on every restart. A window below 1 is refused at startup.

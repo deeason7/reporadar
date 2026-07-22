@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import AliasChoices, ValidationError
 
 from reporadar.config import Settings, get_settings
 
@@ -18,6 +18,7 @@ _ENV_VARS = (
     "REPORADAR_KAFKA_DLQ_TOPIC",
     "REPORADAR_POSTGRES_DSN",
     "REPORADAR_DATA_DIR",
+    "REPORADAR_SEEN_WINDOW",
 )
 
 
@@ -46,6 +47,39 @@ def test_defaults_hold_without_environment() -> None:
     assert settings.kafka_dlq_topic == "raw.events.dlq"
     assert settings.postgres_dsn is None  # no default: only the store needs a database
     assert settings.data_dir == Path("data")
+    # A literal, not the constant it is defined from: asserting it against
+    # DEFAULT_SEEN_WINDOW would move both sides together on a rename and stay
+    # green while the shipped window silently changed.
+    assert settings.seen_window == 50_000
+
+
+def test_the_hermetic_env_list_covers_every_setting() -> None:
+    """``_ENV_VARS`` is hand-maintained, and the defaults test above is only
+    hermetic because it is complete. A field added without a line there would be
+    answered by whoever runs the suite — the same silent gap the shared settings
+    fixture guards against, one file away and previously unguarded."""
+    prefix = Settings.model_config["env_prefix"]
+    expected = {f"{prefix}{name}".upper() for name in Settings.model_fields}
+    for field in Settings.model_fields.values():
+        # A field with alias choices answers to more than its prefixed name, and
+        # every one of them has to be stripped for the environment to be gone.
+        if isinstance(field.validation_alias, AliasChoices):
+            expected.update(str(choice) for choice in field.validation_alias.choices)
+    assert expected <= set(_ENV_VARS)
+
+
+def test_seen_window_is_configurable_and_refuses_a_useless_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REPORADAR_SEEN_WINDOW", "250")
+    assert Settings().seen_window == 250
+
+    # RecentIds rejects maxlen < 1 at construction, which would surface as a
+    # crash partway into a run. Refusing it at load turns a latent runtime
+    # failure into a startup error naming the setting.
+    monkeypatch.setenv("REPORADAR_SEEN_WINDOW", "0")
+    with pytest.raises(ValidationError):
+        Settings()
 
 
 def test_postgres_dsn_is_parsed_and_a_malformed_one_is_refused_at_load(

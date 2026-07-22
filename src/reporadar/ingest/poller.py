@@ -16,7 +16,7 @@ from pathlib import Path
 from reporadar.config import Settings
 from reporadar.github.client import GitHubClient, RateLimitedError
 from reporadar.github.events import RawEvent, dedupe
-from reporadar.ingest.dedup import RecentIds
+from reporadar.ingest.dedup import DEFAULT_SEEN_WINDOW, RecentIds
 from reporadar.ingest.metrics import PollCounters
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ async def collect_sample(
     cycles: int = 10,
     interval_s: float = 10.0,
     pages: int = 3,
-    seen_window: int = 50_000,
+    seen_window: int = DEFAULT_SEEN_WINDOW,
 ) -> Path:
     """Poll for a while and write one NDJSON sample file, deduped across cycles.
 

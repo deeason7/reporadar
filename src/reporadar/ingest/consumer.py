@@ -30,7 +30,7 @@ from dataclasses import dataclass
 
 from pydantic import ValidationError
 
-from reporadar.ingest.dedup import RecentIds
+from reporadar.ingest.dedup import DEFAULT_SEEN_WINDOW, RecentIds
 from reporadar.ingest.metrics import ConsumeCounters
 from reporadar.ingest.wire import UnsupportedSchemaVersionError, WireEnvelope, decode_value
 
@@ -99,7 +99,7 @@ async def consume_stream(
     store: ValidatedStore,
     dead_letter: DeadLetterSink,
     *,
-    seen_window: int = 50_000,
+    seen_window: int = DEFAULT_SEEN_WINDOW,
     report_every: int = 60,
     stop: asyncio.Event | None = None,
 ) -> ConsumeCounters:

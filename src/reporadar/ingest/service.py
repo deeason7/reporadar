@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from reporadar.config import Settings
 from reporadar.github.client import GitHubClient, RateLimitedError
 from reporadar.github.events import RawEvent
-from reporadar.ingest.dedup import RecentIds
+from reporadar.ingest.dedup import DEFAULT_SEEN_WINDOW, RecentIds
 from reporadar.ingest.metrics import PollCounters
 from reporadar.ingest.poller import MAX_RATE_LIMIT_PAUSE_S, poll_once
 
@@ -44,7 +44,7 @@ async def poll_stream(
     *,
     interval_s: float = 10.0,
     pages: int = 3,
-    seen_window: int = 50_000,
+    seen_window: int = DEFAULT_SEEN_WINDOW,
     report_every: int = 60,
     max_cycles: int | None = None,
     stop: asyncio.Event | None = None,

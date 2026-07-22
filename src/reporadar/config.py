@@ -13,6 +13,8 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, PostgresDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from reporadar.ingest.dedup import DEFAULT_SEEN_WINDOW
+
 
 class Settings(BaseSettings):
     """Process-wide settings, sourced from the environment / ``.env``."""
@@ -40,6 +42,10 @@ class Settings(BaseSettings):
     # here and pg_store() fails loudly when it is missing — polling needs no DB.
     postgres_dsn: PostgresDsn | None = None
     data_dir: Path = Path("data")
+    # How many recent event ids each poll loop remembers. Bigger costs memory and
+    # buys a longer duplication horizon; it is a deployment-shaped number (traffic
+    # and cycle interval), which is why it is settable rather than compiled in.
+    seen_window: int = Field(default=DEFAULT_SEEN_WINDOW, ge=1)
 
     @property
     def live_dir(self) -> Path:

@@ -47,6 +47,9 @@ def settings(tmp_path: Path) -> Settings:
         "kafka_dlq_topic": "raw.events.dlq.test",
         "postgres_dsn": PostgresDsn("postgresql://reporadar:test@db.invalid:5432/reporadar"),
         "data_dir": tmp_path / "data",
+        # Deliberately not the shipped default: a test that only passes because
+        # the fixture happens to match production is not testing the wiring.
+        "seen_window": 1_000,
     }
     # The docstring above is a claim; this is what keeps it true. A field added to
     # Settings without a line here would fall back to the environment and source

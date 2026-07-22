@@ -17,6 +17,14 @@ from __future__ import annotations
 
 from collections import OrderedDict
 
+# The default window every poll loop sizes its ``RecentIds`` with. It lives here,
+# beside the structure it sizes, because it is a property of the dedupe window
+# rather than of any one loop — three loops used to each restate it, which is how
+# they would eventually have disagreed. Fifty thousand ids is a few minutes of
+# peak /events traffic: comfortably wider than the overlap between consecutive
+# sweeps, and a few megabytes of strings rather than an unbounded set.
+DEFAULT_SEEN_WINDOW = 50_000
+
 
 class RecentIds:
     """A fixed-capacity, insertion-ordered set of ids with FIFO eviction.

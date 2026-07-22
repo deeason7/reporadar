@@ -48,7 +48,15 @@ def explore(archive_path: Path) -> None:
 def poll(cycles: int = 10, interval_s: float = 10.0, pages: int = 3) -> None:
     """Sample the live /events feed into an NDJSON file (token strongly recommended)."""
     settings = get_settings()
-    out = asyncio.run(collect_sample(settings, cycles=cycles, interval_s=interval_s, pages=pages))
+    out = asyncio.run(
+        collect_sample(
+            settings,
+            cycles=cycles,
+            interval_s=interval_s,
+            pages=pages,
+            seen_window=settings.seen_window,
+        )
+    )
     typer.echo(f"live sample → {out}")
 
 
@@ -66,7 +74,13 @@ def serve(cycles: int | None = None, interval_s: float = 10.0, pages: int = 3) -
     async def _run() -> PollCounters:
         with stop_on_signals() as stop:  # SIGINT/SIGTERM end the run after the current cycle
             return await poll_stream(
-                settings, sink, interval_s=interval_s, pages=pages, max_cycles=cycles, stop=stop
+                settings,
+                sink,
+                interval_s=interval_s,
+                pages=pages,
+                seen_window=settings.seen_window,
+                max_cycles=cycles,
+                stop=stop,
             )
 
     counters = asyncio.run(_run())
@@ -74,12 +88,17 @@ def serve(cycles: int | None = None, interval_s: float = 10.0, pages: int = 3) -
 
 
 @app.command()
-def consume(seen_window: int = 50_000, report_every: int = 60) -> None:
+def consume(seen_window: int | None = None, report_every: int = 60) -> None:
     """Read the event stream into the validated store, dead-lettering what will not decode."""
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     settings = get_settings()
+    # Absent the flag, the deployment's configured window applies — the same
+    # precedence the settings themselves use, where an explicit argument
+    # outranks the environment. The commands are where that choice is made;
+    # the loops below take a number and ask no questions about where it came from.
+    window = settings.seen_window if seen_window is None else seen_window
 
     async def _run() -> ConsumeCounters:
         with stop_on_signals() as stop:  # SIGINT/SIGTERM end the run before the next pull
@@ -98,7 +117,7 @@ def consume(seen_window: int = 50_000, report_every: int = 60) -> None:
                     source,
                     store,
                     dead_letter,
-                    seen_window=seen_window,
+                    seen_window=window,
                     report_every=report_every,
                     stop=stop,
                 )
