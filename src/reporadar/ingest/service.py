@@ -23,14 +23,19 @@ from reporadar.github.client import GitHubClient, RateLimitedError
 from reporadar.github.events import RawEvent
 from reporadar.ingest.dedup import RecentIds
 from reporadar.ingest.metrics import PollCounters
-from reporadar.ingest.poller import poll_once
+from reporadar.ingest.poller import MAX_RATE_LIMIT_PAUSE_S, poll_once
 
 logger = logging.getLogger(__name__)
 
 EventSink = Callable[[Sequence[RawEvent]], Awaitable[None]]
 """An async consumer of fresh events — an NDJSON writer now, a Kafka producer later."""
 
-MAX_RATE_LIMIT_PAUSE_S = 120.0
+# The pause ceiling is defined in ``poller`` and belongs to this module's surface
+# too — it is part of what ``poll_stream`` promises about how long it will wait.
+# Saying so explicitly is required, not decorative: under strict typing a name
+# that a module merely imports is not re-exported, so callers could not read it
+# from here without this line.
+__all__ = ["MAX_RATE_LIMIT_PAUSE_S", "EventSink", "poll_stream"]
 
 
 async def poll_stream(

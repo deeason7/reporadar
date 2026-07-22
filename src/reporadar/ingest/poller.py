@@ -21,6 +21,14 @@ from reporadar.ingest.metrics import PollCounters
 
 logger = logging.getLogger(__name__)
 
+# Retry-After is chosen by the server, so it is an input, not a decision. Waiting
+# out an arbitrary one leaves a poller indistinguishable from a hung process, and
+# the caller has no way to tell which it is looking at. Two minutes is long enough
+# to outlast a normal reset window and short enough that a stuck run is obvious.
+# Shared with the always-on loop in ``service``: both trust the header the same
+# far, and two constants holding one number is how they stop agreeing.
+MAX_RATE_LIMIT_PAUSE_S = 120.0
+
 
 async def poll_once(client: GitHubClient, pages: int = 3, per_page: int = 100) -> list[RawEvent]:
     """Sweep the first ``pages`` pages of /events and dedupe across them."""
@@ -58,7 +66,7 @@ async def collect_sample(
                     batch = await poll_once(client, pages=pages)
                 except RateLimitedError as exc:
                     counters.record_rate_limited()
-                    await asyncio.sleep(min(exc.retry_after_s, 120.0))
+                    await asyncio.sleep(min(exc.retry_after_s, MAX_RATE_LIMIT_PAUSE_S))
                     continue
                 fresh = [event for event in batch if seen.add(event.id)]
                 for event in fresh:
