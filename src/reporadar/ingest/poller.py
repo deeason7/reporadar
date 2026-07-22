@@ -59,8 +59,27 @@ async def collect_sample(
 
     seen = RecentIds(maxlen=seen_window)
     counters = PollCounters()
-    async with GitHubClient(settings) as client:
-        with out.open("w", encoding="utf-8") as fh:
+    # The file is created exclusively, and before the client exists.
+    #
+    # "x" rather than "w" because the name only resolves to the second, so two
+    # runs starting inside one second want the same path — and "w" would let the
+    # second silently destroy the first sample. A lost sample is indistinguishable
+    # from a sample, which makes it the one failure this writer must never have.
+    # Refusing is safe to do loudly: nothing has been collected yet.
+    #
+    # It is opened before the client purely as claim-then-work ordering; no request
+    # is made either way, so this saves a connection pool and nothing more — worth
+    # doing, not worth claiming more for. Unwinding is LIFO, so the client still
+    # closes before the file it writes into.
+    try:
+        handle = out.open("x", encoding="utf-8")
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"sample file {out.name} already exists: another run started within the "
+            f"same second. Retry in a second, or pass a different data directory."
+        ) from exc
+    with handle as fh:
+        async with GitHubClient(settings) as client:
             for cycle in range(cycles):
                 try:
                     batch = await poll_once(client, pages=pages)

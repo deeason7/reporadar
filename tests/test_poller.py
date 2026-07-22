@@ -14,6 +14,7 @@ import respx
 from reporadar.config import Settings
 from reporadar.github.client import GitHubClient
 from reporadar.github.events import iter_ndjson
+from reporadar.ingest import poller
 from reporadar.ingest.poller import collect_sample, poll_once
 
 EVENTS_URL = "https://api.github.com/events"
@@ -66,6 +67,38 @@ def non_utc_local_clock(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     finally:
         monkeypatch.undo()
         time.tzset()
+
+
+def _pin_clock(monkeypatch: pytest.MonkeyPatch, stamps: Iterator[datetime]) -> None:
+    """Drive collect_sample's filename clock from ``stamps``.
+
+    The sample filename comes from the wall clock at second resolution, so
+    whether two runs collide is a property of how fast the machine is. That is
+    not something a test may leave to chance in either direction — a collision
+    test that passes only on quick hardware is as useless as a no-collision test
+    that fails on it.
+    """
+
+    class _Clock:
+        @staticmethod
+        def now(tz: object = None) -> datetime:
+            return next(stamps)
+
+    monkeypatch.setattr(poller, "datetime", _Clock)
+
+
+@pytest.fixture()
+def frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every run starts at the same instant, so every run wants the same file."""
+    fixed = datetime(2026, 7, 21, 12, 0, 0, tzinfo=UTC)
+    _pin_clock(monkeypatch, iter(lambda: fixed, None))
+
+
+@pytest.fixture()
+def ticking_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each run starts a second after the last, so each gets its own file."""
+    base = datetime(2026, 7, 21, 12, 0, 0, tzinfo=UTC)
+    _pin_clock(monkeypatch, (base.replace(second=n) for n in range(60)))
 
 
 @respx.mock
@@ -192,17 +225,57 @@ async def test_the_last_cycle_does_not_sleep_before_returning(
 
 @respx.mock
 async def test_a_second_sample_run_reuses_the_directory(
-    settings: Settings, event_dict: dict[str, Any]
+    settings: Settings, event_dict: dict[str, Any], ticking_clock: None
 ) -> None:
     # Only the second run of a machine's life exercises this, and no test had
     # ever called collect_sample twice — so a first-run-only mkdir would have
     # passed the whole suite and failed the second time anyone sampled.
+    # The clock has to advance: two runs inside one second are now refused, and
+    # real time does not reliably tick between two sub-millisecond calls — which
+    # is exactly why this test used to overwrite its own first sample in silence.
     respx.get(EVENTS_URL).mock(return_value=_page(event_dict, "a"))
 
     first = await collect_sample(settings, cycles=1, interval_s=0.0, pages=1)
     second = await collect_sample(settings, cycles=1, interval_s=0.0, pages=1)
 
     assert first.parent == second.parent == settings.live_dir
+    assert first != second  # distinct runs, distinct samples
+
+
+@respx.mock
+async def test_a_second_run_in_the_same_second_refuses_to_overwrite(
+    settings: Settings, event_dict: dict[str, Any], frozen_clock: None
+) -> None:
+    # The filename resolves only to the second, so two runs starting inside one
+    # second compete for one path. Under mode "w" the second silently destroyed
+    # the first, and the directory-reuse test above was doing exactly that on
+    # every run of the suite without anything noticing — a lost sample looks
+    # just like a sample. Refusing is the whole fix: nothing is collected yet.
+    respx.get(EVENTS_URL).mock(return_value=_page(event_dict, "a"))
+    first = await collect_sample(settings, cycles=1, interval_s=0.0, pages=1)
+    survivor = first.read_bytes()
+
+    with pytest.raises(FileExistsError):
+        await collect_sample(settings, cycles=1, interval_s=0.0, pages=1)
+
+    assert first.read_bytes() == survivor  # the earlier sample is byte-untouched
+    assert [path.name for path in settings.live_dir.iterdir()] == [first.name]
+
+
+@respx.mock
+async def test_the_refusal_names_the_file_and_the_cause(
+    settings: Settings, event_dict: dict[str, Any], frozen_clock: None
+) -> None:
+    # The operator sees this message and nothing else. "File exists" alone invites
+    # deleting the file — which is the earlier sample, and the thing being saved.
+    respx.get(EVENTS_URL).mock(return_value=_page(event_dict, "a"))
+    out = await collect_sample(settings, cycles=1, interval_s=0.0, pages=1)
+
+    with pytest.raises(FileExistsError) as caught:
+        await collect_sample(settings, cycles=1, interval_s=0.0, pages=1)
+
+    assert out.name in str(caught.value)
+    assert "same second" in str(caught.value)  # says why, so retrying is obvious
 
 
 @respx.mock
