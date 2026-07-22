@@ -53,6 +53,31 @@ async def test_handlers_install_and_do_not_outlive_the_context() -> None:
     assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL  # default disposition restored
 
 
+async def test_an_explicit_signal_set_is_not_quietly_widened() -> None:
+    # Asking for SIGTERM only must leave SIGINT alone. Installing the default set
+    # regardless would take Ctrl-C away from a caller who never asked: inside this
+    # context SIGINT stops raising KeyboardInterrupt, so a caller that wanted an
+    # interactive abort would silently get a graceful stop instead.
+    loop = asyncio.get_running_loop()
+
+    with stop_on_signals(signal.SIGTERM):
+        assert loop.remove_signal_handler(signal.SIGINT) is False  # never installed
+
+
+async def test_handlers_do_not_outlive_a_crashing_run() -> None:
+    # The dangerous direction: handlers left installed after the run they belong
+    # to has gone. They would point at a stop event nobody is watching, so the
+    # next SIGTERM would be absorbed and do nothing at all.
+    loop = asyncio.get_running_loop()
+
+    with pytest.raises(RuntimeError):
+        with stop_on_signals(signal.SIGTERM):
+            raise RuntimeError("service crashed mid-run")
+
+    assert loop.remove_signal_handler(signal.SIGTERM) is False
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+
 @respx.mock
 async def test_sigterm_stops_a_running_poll_stream_promptly(
     settings: Settings, event_dict: dict[str, Any]
