@@ -37,14 +37,21 @@ def event_dict() -> dict[str, Any]:
 def settings(tmp_path: Path) -> Settings:
     """Fully pinned settings — init args outrank env/.env, so every field is
     passed explicitly and no developer environment can leak into a test."""
-    return Settings(
-        github_token="test-token",
-        user_agent="reporadar (test-suite)",
-        api_base="https://api.github.com",
-        archive_base="https://data.gharchive.org",
-        kafka_bootstrap_servers="kafka.invalid:9092",  # .invalid can never resolve — fails fast
-        kafka_live_topic="raw.events.test",
-        kafka_dlq_topic="raw.events.dlq.test",
-        postgres_dsn=PostgresDsn("postgresql://reporadar:test@db.invalid:5432/reporadar"),
-        data_dir=tmp_path / "data",
-    )
+    pinned: dict[str, Any] = {
+        "github_token": "test-token",
+        "user_agent": "reporadar (test-suite)",
+        "api_base": "https://api.github.com",
+        "archive_base": "https://data.gharchive.org",
+        "kafka_bootstrap_servers": "kafka.invalid:9092",  # .invalid never resolves — fails fast
+        "kafka_live_topic": "raw.events.test",
+        "kafka_dlq_topic": "raw.events.dlq.test",
+        "postgres_dsn": PostgresDsn("postgresql://reporadar:test@db.invalid:5432/reporadar"),
+        "data_dir": tmp_path / "data",
+    }
+    # The docstring above is a claim; this is what keeps it true. A field added to
+    # Settings without a line here would fall back to the environment and source
+    # itself from whoever is running the suite — on their machine only, and
+    # without failing. "Every field" is the whole basis of the guarantee, so it
+    # is checked rather than trusted.
+    assert pinned.keys() == Settings.model_fields.keys()
+    return Settings(**pinned)

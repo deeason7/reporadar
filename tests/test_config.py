@@ -34,6 +34,11 @@ def _hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 def test_defaults_hold_without_environment() -> None:
     settings = Settings()
     assert settings.github_token is None  # unauthenticated is a supported (60 req/hr) mode
+    # The default is what ships: nobody sets REPORADAR_USER_AGENT unless they think
+    # to, and GitHub rejects requests without a User-Agent outright. It has to name
+    # the project honestly — a browser-shaped string would misrepresent an API
+    # client as a person, which is the opposite of this project's stated posture.
+    assert settings.user_agent == "reporadar (independent research project)"
     assert settings.api_base == "https://api.github.com"
     assert settings.archive_base == "https://data.gharchive.org"
     assert settings.kafka_bootstrap_servers == "localhost:9092"  # the compose stack's listener
@@ -87,6 +92,34 @@ def test_real_environment_outranks_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_p
     (tmp_path / ".env").write_text("GITHUB_TOKEN=gh-from-dotenv\n", encoding="utf-8")
     monkeypatch.setenv("GITHUB_TOKEN", "gh-from-env")
     assert Settings().github_token == "gh-from-env"
+
+
+def test_init_arguments_outrank_both_environment_and_dotenv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The top of the precedence chain, and the rest of the suite is built on it:
+    # the shared `settings` fixture pins every field as an init argument precisely
+    # so that a developer's own .env cannot reach a test. That only holds if init
+    # wins here — otherwise tests would quietly read the machine they run on, and
+    # would keep passing while doing it.
+    (tmp_path / ".env").write_text("REPORADAR_API_BASE=https://dotenv.invalid\n", encoding="utf-8")
+    monkeypatch.setenv("REPORADAR_API_BASE", "https://env.invalid")
+
+    assert Settings(api_base="https://pinned.invalid").api_base == "https://pinned.invalid"
+
+
+def test_settings_ignore_keys_that_belong_to_other_tools(tmp_path: Path) -> None:
+    # One .env is shared with the compose stack, so it carries keys this model
+    # never declares — database and dashboard passwords, for two. "forbid" would
+    # turn each of them into a startup crash for a setting the app doesn't even
+    # want, and the failure would land on whoever first put the stack and the app
+    # behind a single file.
+    (tmp_path / ".env").write_text(
+        "POSTGRES_PASSWORD=for-the-database-container\nREPORADAR_FUTURE_KNOB=not-a-field-yet\n",
+        encoding="utf-8",
+    )
+
+    assert Settings().api_base == "https://api.github.com"  # constructs, ignoring both
 
 
 def test_derived_dirs_follow_data_dir(tmp_path: Path) -> None:
