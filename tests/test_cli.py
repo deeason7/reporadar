@@ -202,6 +202,11 @@ def test_consume_wires_source_store_and_dead_letter_sink(
 
         return factory
 
+    async def fake_require_topics(settings: Settings) -> None:
+        order.append("verify")
+
+    monkeypatch.setattr(cli, "require_topics", fake_require_topics)
+
     source, store, dead_letter = object(), object(), object()
     monkeypatch.setattr(cli, "pg_store", fake_resource("store", store))
     monkeypatch.setattr(cli, "kafka_dead_letter_sink", fake_resource("dlq", dead_letter))
@@ -248,6 +253,9 @@ def test_consume_wires_source_store_and_dead_letter_sink(
     # the store opens first (its config check fails before the group is joined) and
     # the source closes first (reading stops before what it feeds is torn down)
     assert order == [
+        # the topics are checked before anything opens: a missing topic must not
+        # cost a consumer-group join and a request-timeout stall to discover
+        "verify",
         "open store",
         "open dlq",
         "open source",
@@ -280,6 +288,10 @@ def test_the_configured_seen_window_applies_when_the_flag_is_absent(
 
         return factory
 
+    async def fake_require_topics(settings: Settings) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "require_topics", fake_require_topics)
     monkeypatch.setattr(cli, "pg_store", fake_resource(object()))
     monkeypatch.setattr(cli, "kafka_dead_letter_sink", fake_resource(object()))
     monkeypatch.setattr(cli, "kafka_source", fake_resource(object()))

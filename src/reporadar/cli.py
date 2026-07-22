@@ -20,6 +20,7 @@ from reporadar.ingest.service import poll_stream
 from reporadar.ingest.signals import stop_on_signals
 from reporadar.ingest.sinks import HourlyNdjsonSink
 from reporadar.ingest.store import pg_store
+from reporadar.ingest.topics import provision_topics, require_topics
 
 app = typer.Typer(help="RepoRadar — ecosystem intelligence tooling", no_args_is_help=True)
 
@@ -101,6 +102,10 @@ def consume(seen_window: int | None = None, report_every: int = 60) -> None:
     window = settings.seen_window if seen_window is None else seen_window
 
     async def _run() -> ConsumeCounters:
+        # Before anything opens: a missing topic otherwise stalls the consumer for
+        # its whole request timeout and then raises an error naming neither the
+        # topic nor the broker. One read-only round trip buys a legible failure.
+        await require_topics(settings)
         with stop_on_signals() as stop:  # SIGINT/SIGTERM end the run before the next pull
             # Opened outside-in, so they close inside-out. The store goes first
             # because its missing-DSN check is pure config: a misconfigured run
@@ -124,6 +129,34 @@ def consume(seen_window: int | None = None, report_every: int = 60) -> None:
 
     counters = asyncio.run(_run())
     typer.echo(f"stopped: {counters.as_dict()}")
+
+
+@app.command()
+def provision(check: bool = False) -> None:
+    """Create the Kafka topics the pipeline needs (idempotent; safe to re-run)."""
+    # The warnings are the output that matters here, so the logger is configured
+    # exactly as it is for the long-running commands.
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    settings = get_settings()
+    report = asyncio.run(provision_topics(settings, check_only=check))
+    for outcome in report.outcomes:
+        if outcome.missing:
+            state = "MISSING"
+        elif outcome.created:
+            state = "created"
+        else:
+            state = "exists"
+        typer.echo(
+            f"{outcome.name:<24} {state:<8} "
+            f"partitions={outcome.partitions} replication={outcome.replication_factor}"
+        )
+    typer.echo(report.as_dict())
+    if check and not report.ready:
+        # Only --check is strict. Provisioning itself must not fail on drift, or
+        # it would brick every run against an existing, deliberately-sized cluster.
+        raise typer.Exit(code=1)
 
 
 @app.command(name="capture-rate")

@@ -37,6 +37,16 @@ class Settings(BaseSettings):
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_live_topic: str = "raw.events.live"
     kafka_dlq_topic: str = "raw.events.dlq"  # undecodable messages, for triage and replay
+    # One partition count for both topics, deliberately: the dead-letter sink keys
+    # each record with the original repo id, so a repository's poison messages land
+    # on the partition its live events do — a promise that only holds while the two
+    # topics are partitioned identically. Raising this later re-maps every key, so
+    # it is sized once at provisioning time rather than tuned casually.
+    kafka_topic_partitions: int = Field(default=3, ge=1)
+    # 1 is correct for the single-node local stack and the single-VPS deploy; a real
+    # multi-broker cluster wants 3. Above the number of registered brokers the broker
+    # refuses outright, so this is checked before anything is created.
+    kafka_topic_replication_factor: int = Field(default=1, ge=1)
     # No default: the DSN carries a password, and a wrong-by-default database is
     # worse than an absent one. Only the store requires it, so it stays optional
     # here and pg_store() fails loudly when it is missing — polling needs no DB.

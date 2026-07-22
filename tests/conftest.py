@@ -45,6 +45,8 @@ def settings(tmp_path: Path) -> Settings:
         "kafka_bootstrap_servers": "kafka.invalid:9092",  # .invalid never resolves — fails fast
         "kafka_live_topic": "raw.events.test",
         "kafka_dlq_topic": "raw.events.dlq.test",
+        "kafka_topic_partitions": 2,
+        "kafka_topic_replication_factor": 1,
         "postgres_dsn": PostgresDsn("postgresql://reporadar:test@db.invalid:5432/reporadar"),
         "data_dir": tmp_path / "data",
         # Deliberately not the shipped default: a test that only passes because

@@ -1,4 +1,4 @@
-.PHONY: setup lint fmt test up down logs
+.PHONY: setup lint fmt test up down logs provision
 
 # One-time dev setup: environment + hooks
 setup:
@@ -21,6 +21,9 @@ test:
 # Local stack (Kafka + TimescaleDB + Grafana); host ports + secrets come from .env
 up:
 	docker compose up -d
+
+provision:
+	uv run reporadar provision
 
 down:
 	docker compose down

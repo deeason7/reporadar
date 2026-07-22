@@ -64,6 +64,7 @@ reporadar explore data/raw/gharchive/2026-07-07-15.json.gz   # event-type histog
 reporadar poll --cycles 10 --interval-s 10                   # sample the live /events feed
 reporadar serve                                              # always-on capture service
 reporadar consume                                            # stream → validated store
+reporadar provision                                          # create the Kafka topics
 reporadar capture-rate <archive.json.gz> <live.ndjson>       # completeness KPI
 ```
 
@@ -72,6 +73,11 @@ archive layout; Ctrl-C or SIGTERM ends the run cleanly after the current cycle.
 `consume` is the other half: it reads the stream into the database, sending anything that
 will not decode to the dead-letter topic, and stops on the same signals. It needs the local
 stack running and `REPORADAR_POSTGRES_DSN` set.
+`provision` creates the topics the stream needs. It is idempotent, so re-running it is free,
+and it never alters a topic that already exists — if one is sized differently it says so and
+leaves it alone. `provision --check` reports without creating and exits non-zero when the
+broker is not ready, which makes it usable as a deploy gate. The reading commands verify the
+topics before they start, so a fresh broker fails immediately and says what to run.
 `capture-rate` is only meaningful when the live sample's window overlaps the archive hour.
 
 ## Local stack
@@ -81,6 +87,7 @@ Kafka (KRaft), TimescaleDB, and Grafana for local development:
 ```bash
 cp .env.example .env      # then set POSTGRES_PASSWORD and GRAFANA_ADMIN_PASSWORD
 make up                   # start the stack (host ports are shifted off the defaults)
+make provision            # create the topics (once per broker; safe to repeat)
 make logs                 # follow logs
 make down                 # stop it
 ```

@@ -37,6 +37,11 @@ All notable changes to this project are documented here, per
 - Dead-letter routing for messages that cannot be decoded: each is published to a dead-letter
   topic as a self-describing versioned record carrying the triage reason and the original
   bytes, so one malformed message is isolated and replayable rather than dropped or fatal.
+- `reporadar provision` creates the Kafka topics the pipeline needs, idempotently, with a
+  `--check` mode that reports without creating and exits non-zero when the broker is not ready.
+  Reading commands now verify the topics before joining a consumer group, so a fresh broker
+  fails immediately naming the missing topic instead of stalling and then reporting nothing
+  useful. Partition and replication counts are settings; existing topics are never altered.
 - Configurable deduplication window (`REPORADAR_SEEN_WINDOW`): how many recent event ids the
   poll and consume loops remember before an id counts as fresh again. It trades memory against
   the duplication horizon, so a deployment can size it to its own traffic from the environment
