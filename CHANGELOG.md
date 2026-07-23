@@ -37,6 +37,12 @@ All notable changes to this project are documented here, per
 - Dead-letter routing for messages that cannot be decoded: each is published to a dead-letter
   topic as a self-describing versioned record carrying the triage reason and the original
   bytes, so one malformed message is isolated and replayable rather than dropped or fatal.
+- The capture service now feeds the stream: `serve` writes each batch of fresh events to the
+  hourly NDJSON files (the reconciliation record) and publishes it to Kafka in one step, so the
+  live path and the consumer are finally connected end to end. The two are not equals — the
+  files are the record and a write failure there stops the run, while the stream is best-effort:
+  a broker outage is logged and counted and the service keeps capturing, because the archive
+  reconciliation, not the live stream, is what completeness is measured against.
 - `reporadar provision` creates the Kafka topics the pipeline needs, idempotently, with a
   `--check` mode that reports without creating and exits non-zero when the broker is not ready.
   Reading commands now verify the topics before joining a consumer group, so a fresh broker

@@ -13,12 +13,12 @@ from reporadar.analysis.capture import capture_rate, type_counts
 from reporadar.config import get_settings
 from reporadar.ingest.archive import download_hour
 from reporadar.ingest.consumer import consume_stream
-from reporadar.ingest.kafka import kafka_dead_letter_sink, kafka_source
+from reporadar.ingest.kafka import kafka_dead_letter_sink, kafka_sink, kafka_source
 from reporadar.ingest.metrics import ConsumeCounters, PollCounters
 from reporadar.ingest.poller import collect_sample
 from reporadar.ingest.service import poll_stream
 from reporadar.ingest.signals import stop_on_signals
-from reporadar.ingest.sinks import HourlyNdjsonSink
+from reporadar.ingest.sinks import HourlyNdjsonSink, TeeSink
 from reporadar.ingest.store import pg_store
 from reporadar.ingest.topics import provision_topics, require_topics
 
@@ -63,29 +63,39 @@ def poll(cycles: int = 10, interval_s: float = 10.0, pages: int = 3) -> None:
 
 @app.command()
 def serve(cycles: int | None = None, interval_s: float = 10.0, pages: int = 3) -> None:
-    """Run the always-on poller, capturing fresh events to hourly NDJSON files."""
+    """Run the always-on poller: fresh events go to hourly NDJSON files and the stream."""
     # The service's logs are its interface while it runs; the library only ever
     # emits, so the long-running entrypoint is where logging gets configured.
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     settings = get_settings()
-    sink = HourlyNdjsonSink(settings.live_dir)
 
-    async def _run() -> PollCounters:
+    async def _run() -> tuple[PollCounters, int]:
+        # Only the live topic: serve produces there and nowhere else, so it must
+        # not refuse to start over the dead-letter topic it never touches. This
+        # also turns a missing topic or an unreachable broker into an immediate,
+        # named failure instead of the producer's 40-second metadata stall.
+        await require_topics(settings, [settings.kafka_live_topic])
         with stop_on_signals() as stop:  # SIGINT/SIGTERM end the run after the current cycle
-            return await poll_stream(
-                settings,
-                sink,
-                interval_s=interval_s,
-                pages=pages,
-                seen_window=settings.seen_window,
-                max_cycles=cycles,
-                stop=stop,
-            )
+            async with kafka_sink(settings) as stream:
+                # The hourly files are the reconciliation record and come first;
+                # the stream is best-effort, so a broker blip costs freshness, not
+                # the capture service. See TeeSink.
+                sink = TeeSink(HourlyNdjsonSink(settings.live_dir), stream)
+                counters = await poll_stream(
+                    settings,
+                    sink,
+                    interval_s=interval_s,
+                    pages=pages,
+                    seen_window=settings.seen_window,
+                    max_cycles=cycles,
+                    stop=stop,
+                )
+                return counters, sink.dropped
 
-    counters = asyncio.run(_run())
-    typer.echo(f"stopped: {counters.as_dict()}")
+    counters, stream_drops = asyncio.run(_run())
+    typer.echo(f"stopped: {counters.as_dict()} stream_drops={stream_drops}")
 
 
 @app.command()
@@ -105,7 +115,8 @@ def consume(seen_window: int | None = None, report_every: int = 60) -> None:
         # Before anything opens: a missing topic otherwise stalls the consumer for
         # its whole request timeout and then raises an error naming neither the
         # topic nor the broker. One read-only round trip buys a legible failure.
-        await require_topics(settings)
+        # Both topics: the consumer reads the live stream and writes the dead-letter one.
+        await require_topics(settings, [settings.kafka_live_topic, settings.kafka_dlq_topic])
         with stop_on_signals() as stop:  # SIGINT/SIGTERM end the run before the next pull
             # Opened outside-in, so they close inside-out. The store goes first
             # because its missing-DSN check is pure config: a misconfigured run

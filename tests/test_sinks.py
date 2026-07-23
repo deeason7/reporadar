@@ -1,17 +1,33 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 import respx
 
 from reporadar.config import Settings
 from reporadar.github.events import RawEvent, iter_ndjson
 from reporadar.ingest.service import poll_stream
-from reporadar.ingest.sinks import HourlyNdjsonSink
+from reporadar.ingest.sinks import HourlyNdjsonSink, TeeSink
 
 EVENTS_URL = "https://api.github.com/events"
+
+
+class RecordingSink:
+    """An ``EventSink`` that records the batches it receives, or fails on every call."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.batches: list[list[RawEvent]] = []
+        self._fail = fail
+
+    async def __call__(self, events: Sequence[RawEvent]) -> None:
+        if self._fail:
+            raise RuntimeError("sink boom")
+        self.batches.append(list(events))
 
 
 def _event(event_id: str, created_at: str) -> RawEvent:
@@ -87,3 +103,57 @@ async def test_poll_stream_writes_through_the_hourly_sink(
         iter_ndjson(sink.path_for("2026-07-07-15").read_text(encoding="utf-8").splitlines())
     )
     assert [event.id for event in written] == ["z"]
+
+
+async def test_tees_a_batch_to_every_sink_in_order() -> None:
+    primary, first, second = RecordingSink(), RecordingSink(), RecordingSink()
+    tee = TeeSink(primary, first, second)
+
+    batch = [_event("1", "2026-07-07T15:00:00Z")]
+    await tee(batch)
+
+    # every sink saw the batch, and nothing was dropped
+    assert primary.batches == first.batches == second.batches == [batch]
+    assert tee.dropped == 0
+
+
+async def test_a_primary_failure_is_fatal_and_never_touches_the_stream() -> None:
+    # The primary is the reconciliation record: if it cannot be written the run
+    # must stop, and the stream must not be fed a batch the record does not have.
+    primary = RecordingSink(fail=True)
+    stream = RecordingSink()
+    tee = TeeSink(primary, stream)
+
+    with pytest.raises(RuntimeError, match="sink boom"):
+        await tee([_event("1", "2026-07-07T15:00:00Z")])
+
+    assert stream.batches == []  # never reached — primary comes first and failed
+    assert tee.dropped == 0  # a primary failure is not a "drop", it is fatal
+
+
+async def test_a_best_effort_failure_is_logged_counted_and_survived(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A stream failure must not stop capture: the record is already written, and
+    # the archive reconciles anything the stream misses. It is loud and counted,
+    # never silent, and a later best-effort sink still runs.
+    primary, failing, healthy = RecordingSink(), RecordingSink(fail=True), RecordingSink()
+    tee = TeeSink(primary, failing, healthy)
+
+    batch = [_event("1", "2026-07-07T15:00:00Z")]
+    with caplog.at_level(logging.WARNING, logger="reporadar.ingest.sinks"):
+        await tee(batch)  # must not raise
+
+    assert primary.batches == [batch]  # the record was written
+    assert healthy.batches == [batch]  # one failure did not skip the rest
+    assert tee.dropped == 1
+    assert any("dropped a batch" in message for message in caplog.messages)
+
+
+async def test_dropped_accumulates_across_batches() -> None:
+    tee = TeeSink(RecordingSink(), RecordingSink(fail=True))
+
+    for event_id in ("1", "2", "3"):
+        await tee([_event(event_id, "2026-07-07T15:00:00Z")])
+
+    assert tee.dropped == 3

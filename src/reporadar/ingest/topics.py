@@ -204,9 +204,9 @@ def _normalise_errors(response: Any) -> list[tuple[str, int, str | None]]:
     return normalised
 
 
-async def describe(admin: TopicAdmin, specs: Sequence[TopicSpec]) -> dict[str, TopicState]:
-    """Current broker state for ``specs``. Read-only: it never creates anything."""
-    described = await admin.describe_topics([spec.name for spec in specs])
+async def describe(admin: TopicAdmin, names: Sequence[str]) -> dict[str, TopicState]:
+    """Current broker state for ``names``. Read-only: it never creates anything."""
+    described = await admin.describe_topics(list(names))
     states = [TopicState.model_validate(dict(entry)) for entry in described]
     for state in states:
         if not state.exists and state.error_code != _UNKNOWN_TOPIC:
@@ -244,7 +244,7 @@ def _report(specs: Sequence[TopicSpec], outcomes: Sequence[TopicOutcome]) -> Pro
 
 async def verify_topics(admin: TopicAdmin, specs: Sequence[TopicSpec]) -> ProvisionReport:
     """Report what exists, creating nothing."""
-    states = await describe(admin, specs)
+    states = await describe(admin, [spec.name for spec in specs])
     return _report(specs, [_outcome(spec, states[spec.name]) for spec in specs])
 
 
@@ -261,7 +261,7 @@ async def ensure_topics(admin: TopicAdmin, specs: Sequence[TopicSpec]) -> Provis
             f"lower REPORADAR_KAFKA_TOPIC_REPLICATION_FACTOR or add brokers"
         )
 
-    states = await describe(admin, specs)
+    states = await describe(admin, [spec.name for spec in specs])
     absent = [spec for spec in specs if not states[spec.name].exists]
     created: set[str] = set()
     if absent:
@@ -284,7 +284,7 @@ async def ensure_topics(admin: TopicAdmin, specs: Sequence[TopicSpec]) -> Provis
                     f"(code {code}){f': {message}' if message else ''}"
                 )
 
-    refreshed = await describe(admin, specs)
+    refreshed = await describe(admin, [spec.name for spec in specs])
     outcomes = []
     for spec in specs:
         state = refreshed[spec.name]
@@ -335,18 +335,21 @@ async def provision_topics(settings: Settings, *, check_only: bool = False) -> P
         return await ensure_topics(admin, specs)
 
 
-async def require_topics(settings: Settings) -> None:
-    """Fail fast, and legibly, when a topic the run needs does not exist.
+async def require_topics(settings: Settings, topics: Sequence[str]) -> None:
+    """Fail fast, and legibly, when a topic the caller needs does not exist.
 
-    Without this a consumer blocks for its whole request timeout and then raises
-    an exception naming neither the topic nor the broker.
+    Takes the topics *this* caller depends on rather than all of them: the
+    consumer needs both the live and dead-letter topics, but the producer only
+    writes to the live one, and a producer-only deployment should not refuse to
+    start over a dead-letter topic it never touches. Without this a client blocks
+    for its whole request timeout and then raises an exception naming neither the
+    topic nor the broker.
     """
-    specs = required_topics(settings)
     async with kafka_admin(settings) as admin:
-        report = await verify_topics(admin, specs)
-    if report.missing:
-        missing = ", ".join(report.missing)
+        states = await describe(admin, topics)
+    missing = [name for name in topics if not states[name].exists]
+    if missing:
         raise RuntimeError(
-            f"topic(s) {missing} do not exist on {settings.kafka_bootstrap_servers}; "
+            f"topic(s) {', '.join(missing)} do not exist on {settings.kafka_bootstrap_servers}; "
             f"run 'reporadar provision' to create them"
         )

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -12,7 +13,9 @@ from typer.testing import CliRunner
 from reporadar import cli
 from reporadar.analysis.capture import CaptureReport
 from reporadar.config import Settings
+from reporadar.github.events import RawEvent
 from reporadar.ingest.metrics import ConsumeCounters, PollCounters
+from reporadar.ingest.sinks import EventSink
 
 runner = CliRunner()
 
@@ -120,23 +123,54 @@ def test_poll_forwards_options_and_reports_output(
     assert str(out_path) in result.output
 
 
-def test_serve_wires_stream_sink_and_signals(
-    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+def test_serve_tees_capture_to_the_files_and_the_stream(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings, event_dict: dict[str, Any]
 ) -> None:
-    # serve's own work is composition: build the sink where settings point, translate
-    # --cycles into the loop's max_cycles bound, and run the stream under a live stop
-    # event. The loop is proven in test_service.py, the sink in test_sinks.py, and the
-    # signal handling in test_signals.py; stop_on_signals runs for real here (its
-    # handlers are removed on exit, so nothing leaks out of the test).
+    # serve's own work is composition: check the live topic exists, open the Kafka
+    # producer, and feed the loop a tee that writes each batch to the hourly files
+    # (the reconciliation record) AND publishes it to the stream. The loop, the
+    # sinks and the tee's failure policy are proven in their own tests; what belongs
+    # here is that the two sinks are actually wired into one tee — proven by driving
+    # a batch through the sink the loop receives and seeing both sinks record it.
+    sample = RawEvent.model_validate(event_dict)
     calls: dict[str, object] = {}
+    order: list[str] = []
 
-    class FakeSink:
+    class Recorder:
+        def __init__(self) -> None:
+            self.batches: list[Sequence[RawEvent]] = []
+
+        async def __call__(self, events: Sequence[RawEvent]) -> None:
+            self.batches.append(events)
+
+    class FakeNdjsonSink(Recorder):
         def __init__(self, base_dir: Path) -> None:
+            super().__init__()
             calls["sink_dir"] = base_dir
+
+    stream = Recorder()
+    ndjson_sinks: list[FakeNdjsonSink] = []
+
+    def make_ndjson(base_dir: Path) -> FakeNdjsonSink:
+        sink = FakeNdjsonSink(base_dir)
+        ndjson_sinks.append(sink)
+        return sink
+
+    @asynccontextmanager
+    async def fake_kafka_sink(settings: Settings) -> AsyncIterator[Recorder]:
+        order.append("open stream")
+        try:
+            yield stream
+        finally:
+            order.append("close stream")
+
+    async def fake_require_topics(settings: Settings, topics: Sequence[str]) -> None:
+        order.append("verify")
+        calls["required_topics"] = list(topics)
 
     async def fake_poll_stream(
         settings: Settings,
-        sink: object,
+        sink: EventSink,
         *,
         interval_s: float,
         pages: int,
@@ -144,37 +178,33 @@ def test_serve_wires_stream_sink_and_signals(
         max_cycles: int | None,
         stop: asyncio.Event,
     ) -> PollCounters:
-        calls.update(
-            settings=settings,
-            sink=sink,
-            interval_s=interval_s,
-            pages=pages,
-            seen_window=seen_window,
-            max_cycles=max_cycles,
-            stop_set=stop.is_set(),
-        )
+        order.append("poll")
+        calls.update(max_cycles=max_cycles, seen_window=seen_window, pages=pages)
+        await sink([sample])  # drive one batch through the wired sink
         counters = PollCounters()
         counters.record_cycle(fetched=5, fresh=3)
         return counters
 
-    monkeypatch.setattr(cli, "HourlyNdjsonSink", FakeSink)
+    monkeypatch.setattr(cli, "HourlyNdjsonSink", make_ndjson)
+    monkeypatch.setattr(cli, "kafka_sink", fake_kafka_sink)
+    monkeypatch.setattr(cli, "require_topics", fake_require_topics)
     monkeypatch.setattr(cli, "poll_stream", fake_poll_stream)
 
     result = runner.invoke(cli.app, ["serve", "--cycles", "2", "--interval-s", "0", "--pages", "1"])
 
     assert result.exit_code == 0
+    assert calls["required_topics"] == [pinned_cli_settings.kafka_live_topic]  # live topic only
     assert calls["sink_dir"] == pinned_cli_settings.live_dir
-    assert calls["settings"] is pinned_cli_settings
-    assert isinstance(calls["sink"], FakeSink)  # the sink built from settings is the one serving
     assert calls["max_cycles"] == 2  # --cycles arrives as the loop's bound
-    assert calls["interval_s"] == 0.0
-    assert calls["pages"] == 1
-    # the always-on loop is the one this setting exists for: a deployment sizes
-    # its dedup window by environment, without a flag on every restart
     assert calls["seen_window"] == pinned_cli_settings.seen_window == 1_000
-    assert calls["stop_set"] is False  # a real, un-fired stop event was threaded through
+    # the one batch the loop pushed reached BOTH the files and the stream — the tee is real
+    assert ndjson_sinks[0].batches == [[sample]]
+    assert stream.batches == [[sample]]
+    # verify before the producer opens; the producer closes after the loop returns
+    assert order == ["verify", "open stream", "poll", "close stream"]
     assert "stopped:" in result.output
     assert "'fresh': 3" in result.output  # the final counters surface to the operator
+    assert "stream_drops=0" in result.output  # drops are observable at shutdown
 
 
 def test_consume_wires_source_store_and_dead_letter_sink(
@@ -202,8 +232,9 @@ def test_consume_wires_source_store_and_dead_letter_sink(
 
         return factory
 
-    async def fake_require_topics(settings: Settings) -> None:
+    async def fake_require_topics(settings: Settings, topics: Sequence[str]) -> None:
         order.append("verify")
+        calls["required_topics"] = list(topics)
 
     monkeypatch.setattr(cli, "require_topics", fake_require_topics)
 
@@ -250,6 +281,11 @@ def test_consume_wires_source_store_and_dead_letter_sink(
     assert calls["seen_window"] == 10  # --seen-window sizes the dedup window
     assert calls["report_every"] == 0  # 0 disables progress logging
     assert calls["stop_set"] is False  # a real, un-fired stop event was threaded through
+    # the consumer reads the live topic and writes the dead-letter one, so it checks both
+    assert calls["required_topics"] == [
+        pinned_cli_settings.kafka_live_topic,
+        pinned_cli_settings.kafka_dlq_topic,
+    ]
     # the store opens first (its config check fails before the group is joined) and
     # the source closes first (reading stops before what it feeds is torn down)
     assert order == [
@@ -288,7 +324,7 @@ def test_the_configured_seen_window_applies_when_the_flag_is_absent(
 
         return factory
 
-    async def fake_require_topics(settings: Settings) -> None:
+    async def fake_require_topics(settings: Settings, topics: Sequence[str]) -> None:
         return None
 
     monkeypatch.setattr(cli, "require_topics", fake_require_topics)

@@ -286,11 +286,26 @@ async def test_verify_refuses_to_start_and_says_how_to_fix_it(
     monkeypatch.setattr(topics, "AIOKafkaAdminClient", lambda **kwargs: admin)
 
     with pytest.raises(RuntimeError) as caught:
-        await require_topics(settings)
+        await require_topics(settings, [settings.kafka_live_topic, settings.kafka_dlq_topic])
 
     assert settings.kafka_live_topic in str(caught.value)
     assert "reporadar provision" in str(caught.value)
     assert admin.created == []  # the preflight is read-only even when it fails
+
+
+async def test_require_checks_only_the_topics_it_is_given(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    # A producer-only run needs the live topic, not the dead-letter one. If it
+    # asked for both, it would refuse to start over a topic it never writes to.
+    admin = FakeAdmin(catalogue={settings.kafka_live_topic: (2, 1)})  # dlq deliberately absent
+    monkeypatch.setattr(topics, "AIOKafkaAdminClient", lambda **kwargs: admin)
+
+    await require_topics(settings, [settings.kafka_live_topic])  # must not raise
+
+    # And it still catches a genuinely missing one it was asked about.
+    with pytest.raises(RuntimeError, match=settings.kafka_dlq_topic):
+        await require_topics(settings, [settings.kafka_dlq_topic])
 
 
 async def test_the_admin_factory_wires_settings_and_closes_the_client(
