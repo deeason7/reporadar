@@ -41,9 +41,24 @@ class CaptureReport:
     matched: int
 
     @property
-    def capture_rate(self) -> float:
-        """Share of the archived hour's event ids present in the live sample."""
-        return self.matched / self.archive_events if self.archive_events else 0.0
+    def capture_rate(self) -> float | None:
+        """Share of the archived hour's event ids present in the live sample.
+
+        ``None`` when the sample holds events but none of them appear in this
+        archive hour. That is not a capture rate of zero: it means the two files
+        cannot be reconciled at all — an unshared identifier, or a sample drawn
+        from a different hour — and the two facts are not interchangeable. A
+        rate of 0.0 says the poller missed everything and would send the next
+        investigation after the poller; measured against real data the same
+        arithmetic reported a confident 0% while the join was empty by
+        construction. Returning ``None`` makes that case unrepresentable as a
+        number, and mypy makes every caller say what it does about it.
+        """
+        if self.archive_events == 0:
+            return 0.0
+        if self.matched == 0 and self.live_events > 0:
+            return None
+        return self.matched / self.archive_events
 
 
 def capture_rate(archive_path: Path, live_path: Path) -> CaptureReport:

@@ -114,4 +114,40 @@ def test_capture_rate_of_empty_archive_is_zero(tmp_path: Path) -> None:
     assert CaptureReport(archive_events=0, live_events=0, matched=0).capture_rate == 0.0
     _write_archive_gz(archive, [_event("1")])
     _write_ndjson(live, [_event("2")])
+    # Disjoint files still report the raw counts...
     assert capture_rate(archive, live).matched == 0
+    # ...but must NOT express that as a rate. This line is the whole point: the
+    # earlier version of this test stopped at `matched == 0` and so agreed with
+    # a function that reported 0.0% against real feeds sharing no identifier.
+    assert capture_rate(archive, live).capture_rate is None
+
+
+def test_capture_rate_refuses_when_no_sampled_event_is_in_the_archive(tmp_path: Path) -> None:
+    # Measured against real data: a 100-event live sample matched 0 of 157,856
+    # archive events for the same UTC hour — and 0 again in the hours either
+    # side. The feeds share no event id (nor push_id, nor commit SHA), so the
+    # join is empty by construction. The old arithmetic turned that into a
+    # confident "0.0% capture rate": right type, right range, and wrong in a way
+    # nothing downstream could detect. A rate of zero claims the poller missed
+    # everything; this claims nothing can be concluded, and they are different
+    # facts.
+    archive = tmp_path / "2026-07-07-15.json.gz"
+    live = tmp_path / "live.ndjson"
+    _write_archive_gz(archive, [_event(str(i)) for i in range(1, 51)])  # ids 1..50
+    _write_ndjson(live, [_event(f"9{i}") for i in range(1, 21)])  # 20 ids, none shared
+
+    report = capture_rate(archive, live)
+
+    assert report.archive_events == 50
+    assert report.live_events == 20
+    assert report.matched == 0
+    assert report.capture_rate is None  # not 0.0
+
+
+def test_capture_rate_is_zero_when_the_sample_itself_is_empty(tmp_path: Path) -> None:
+    # The mirror case, and the reason the guard is not simply "matched == 0":
+    # an empty sample against a populated hour genuinely IS zero capture. The
+    # poller ran and caught nothing, which is a measurement, not an ambiguity.
+    from reporadar.analysis.capture import CaptureReport
+
+    assert CaptureReport(archive_events=1000, live_events=0, matched=0).capture_rate == 0.0

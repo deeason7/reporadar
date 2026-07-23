@@ -91,6 +91,26 @@ def test_capture_rate_formats_report(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "20.0%" in result.output  # 200 / 1000, formatted as a percentage
 
 
+def test_capture_rate_refuses_and_exits_nonzero_when_not_reconcilable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A scheduled reconciliation must not record "0.0%" as a successful run when
+    # the two files share no event identity. The counts still print — they are
+    # the diagnosis — but the rate line names the cause and the exit code makes
+    # the failure legible to whatever runs the command.
+    def fake_capture_rate(archive_path: Path, live_path: Path) -> CaptureReport:
+        return CaptureReport(archive_events=157_856, live_events=100, matched=0)
+
+    monkeypatch.setattr(cli, "capture_rate", fake_capture_rate)
+
+    result = runner.invoke(cli.app, ["capture-rate", "a.json.gz", "live.ndjson"])
+
+    assert result.exit_code == 1
+    assert "NOT RECONCILABLE" in result.output
+    assert "157,856" in result.output  # the counts are still reported
+    assert "0.0%" not in result.output  # the number that must never be printed
+
+
 def test_poll_forwards_options_and_reports_output(
     monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings, tmp_path: Path
 ) -> None:

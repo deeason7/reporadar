@@ -177,7 +177,19 @@ def capture_rate_cmd(archive_path: Path, live_path: Path) -> None:
     typer.echo(f"archive events : {report.archive_events:,}")
     typer.echo(f"live events    : {report.live_events:,}")
     typer.echo(f"matched        : {report.matched:,}")
-    typer.echo(f"capture rate   : {report.capture_rate:.1%}")
+    rate = report.capture_rate
+    if rate is None:
+        # Naming the cause, not just the condition: "0.0%" here would read as a
+        # captured-nothing hour and send the reader after the poller, when the
+        # two files in fact share no event identity at all. Exit non-zero so a
+        # scheduled run cannot record this as a successful measurement.
+        typer.echo(
+            f"capture rate   : NOT RECONCILABLE — none of the {report.live_events:,} sampled "
+            "events appear in this archive hour, so no rate can be computed. The sample and "
+            "the archive hour do not share an event identifier."
+        )
+        raise typer.Exit(code=1)
+    typer.echo(f"capture rate   : {rate:.1%}")
 
 
 def main() -> None:

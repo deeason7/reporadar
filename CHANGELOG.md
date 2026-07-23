@@ -52,3 +52,13 @@ All notable changes to this project are documented here, per
   poll and consume loops remember before an id counts as fresh again. It trades memory against
   the duplication horizon, so a deployment can size it to its own traffic from the environment
   rather than passing a flag on every restart. A window below 1 is refused at startup.
+
+### Fixed
+- The capture-rate KPI no longer reports a rate it cannot support. When a live sample holds
+  events but none of them appear in the archive hour it is compared against, the two files
+  cannot be reconciled at all — an unshared event identifier, or a sample drawn from a
+  different hour — and that is a different fact from capturing nothing. The previous
+  arithmetic turned it into a confident `0.0%`: correctly typed, in range, and wrong in a way
+  nothing downstream could detect, pointing any investigation at the poller instead of at the
+  comparison. `capture-rate` now prints the counts, names the cause, and exits non-zero, so a
+  scheduled run cannot record it as a successful measurement.
