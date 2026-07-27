@@ -1,9 +1,9 @@
 """Live /events poller: page sweep → dedupe → NDJSON on disk.
 
 The public /events feed is a rolling, pagination-capped window — a single
-poller cannot see everything at peak. The poller's job is *freshness*;
-*completeness* comes from the hourly archive, and the gap between the two is
-measured (capture rate), never assumed away.
+poller cannot see everything at peak. The poller's job is *freshness*, and how
+much it misses is measured from the feed's own id continuity (see ``coverage``)
+rather than assumed away.
 """
 
 from __future__ import annotations

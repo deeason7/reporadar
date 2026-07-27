@@ -53,6 +53,16 @@ All notable changes to this project are documented here, per
   the duplication horizon, so a deployment can size it to its own traffic from the environment
   rather than passing a flag on every restart. A window below 1 is refused at startup.
 
+- The capture service now measures how much of the feed it is actually seeing, using nothing
+  but the feed itself. Public event ids run in near sequence, so the distance the feed travels
+  between two polls says how many events went by, and the poller knows how many of those it
+  holds; the ratio is reported alongside the run counters. Two details make it trustworthy: the
+  feed carries more than one id sequence, so sequences are detected from the data and never
+  subtracted across; and the id spacing is measured on every sweep rather than configured,
+  because a constant would quietly stop being true. It is published as an estimate — absent
+  rather than zero when a cycle cannot support one, such as the first cycle of a run or a
+  repeated page — and it rests on the stated assumption that a returned page is contiguous.
+
 ### Fixed
 - The capture-rate KPI no longer reports a rate it cannot support. When a live sample holds
   events but none of them appear in the archive hour it is compared against, the two files

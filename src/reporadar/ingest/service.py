@@ -21,6 +21,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from reporadar.config import Settings
 from reporadar.github.client import GitHubClient, RateLimitedError
 from reporadar.github.events import RawEvent
+from reporadar.ingest.coverage import CoverageTracker, numeric_ids
 from reporadar.ingest.dedup import DEFAULT_SEEN_WINDOW, RecentIds
 from reporadar.ingest.metrics import PollCounters
 from reporadar.ingest.poller import MAX_RATE_LIMIT_PAUSE_S, poll_once
@@ -60,6 +61,10 @@ async def poll_stream(
     """
     seen = RecentIds(maxlen=seen_window)
     counters = PollCounters()
+    # Fed the whole batch, not just the fresh events: coverage is a question about
+    # the feed's own continuity, and dropping the ids we have already stored would
+    # punch holes in the very sequence being measured.
+    coverage = CoverageTracker()
     async with GitHubClient(settings) as client:
         while True:
             if stop is not None and stop.is_set():
@@ -74,10 +79,11 @@ async def poll_stream(
                 logger.warning("rate limited; pausing %.0fs then resuming", pause)
                 await _interruptible_sleep(pause, stop)
                 continue
+            cycle_coverage = coverage.record(numeric_ids(event.id for event in batch))
             fresh = [event for event in batch if seen.add(event.id)]
             if fresh:
                 await sink(fresh)
-            counters.record_cycle(fetched=len(batch), fresh=len(fresh))
+            counters.record_cycle(fetched=len(batch), fresh=len(fresh), coverage=cycle_coverage)
             if report_every > 0 and counters.cycles % report_every == 0:
                 logger.info("poll progress: %s", counters.as_dict())
             await _interruptible_sleep(interval_s, stop)
