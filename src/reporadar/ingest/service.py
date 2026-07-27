@@ -24,7 +24,7 @@ from reporadar.github.events import RawEvent
 from reporadar.ingest.coverage import CoverageTracker, numeric_ids
 from reporadar.ingest.dedup import DEFAULT_SEEN_WINDOW, RecentIds
 from reporadar.ingest.metrics import PollCounters
-from reporadar.ingest.poller import MAX_RATE_LIMIT_PAUSE_S, poll_once
+from reporadar.ingest.poller import MAX_RATE_LIMIT_PAUSE_S, effective_interval, poll_once
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,7 @@ async def poll_stream(
     # the feed's own continuity, and dropping the ids we have already stored would
     # punch holes in the very sequence being measured.
     coverage = CoverageTracker()
+    announced_interval = interval_s
     async with GitHubClient(settings) as client:
         while True:
             if stop is not None and stop.is_set():
@@ -86,7 +87,21 @@ async def poll_stream(
             counters.record_cycle(fetched=len(batch), fresh=len(fresh), coverage=cycle_coverage)
             if report_every > 0 and counters.cycles % report_every == 0:
                 logger.info("poll progress: %s", counters.as_dict())
-            await _interruptible_sleep(interval_s, stop)
+            sleep_s = effective_interval(interval_s, client.last_poll_interval_s)
+            if sleep_s != announced_interval:
+                # Say it once per change rather than every cycle: an operator who
+                # configured 10s and is being paced at 60s must be able to find
+                # out why without reading the source.
+                if sleep_s != interval_s:
+                    logger.info(
+                        "polling every %.0fs: the server asks for %.0fs, overriding the "
+                        "configured %.0fs",
+                        sleep_s,
+                        client.last_poll_interval_s or sleep_s,
+                        interval_s,
+                    )
+                announced_interval = sleep_s
+            await _interruptible_sleep(sleep_s, stop)
     logger.info("poll stream stopped: %s", counters.as_dict())
     return counters
 

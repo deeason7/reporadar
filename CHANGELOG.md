@@ -64,6 +64,15 @@ All notable changes to this project are documented here, per
   repeated page — and it rests on the stated assumption that a returned page is contiguous.
 
 ### Fixed
+- The poller now honours the cadence the API asks for. Every /events response states a minimum
+  interval between polls, and the service was configured to poll six times faster than that,
+  against an endpoint cached for longer still. Polling faster cannot surface more events: it
+  spends quota re-reading a page already held and records the result as duplicates, which then
+  reads as a property of the feed rather than of our own cadence. The stated interval is taken
+  from the response rather than hardcoded — so it stays correct if the API changes it — and the
+  slower of it and the configured interval is used, leaving a deliberately gentle setting alone
+  while making a too-fast one unreachable. An override is logged once, so an operator can see
+  why a configured interval is not the one in effect.
 - The capture-rate KPI no longer reports a rate it cannot support. When a live sample holds
   events but none of them appear in the archive hour it is compared against, the two files
   cannot be reconciled at all — an unshared event identifier, or a sample drawn from a

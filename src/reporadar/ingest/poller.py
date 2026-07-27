@@ -30,6 +30,25 @@ logger = logging.getLogger(__name__)
 MAX_RATE_LIMIT_PAUSE_S = 120.0
 
 
+def effective_interval(requested: float, server_requested: float | None) -> float:
+    """The slower of what we asked for and what the server asks of us.
+
+    GitHub states a minimum between polls on every /events response
+    (``X-Poll-Interval``), and caches the endpoint for longer still — so polling
+    faster than asked cannot surface more events. It only spends quota re-reading
+    a page we already hold, and books the result as duplicates, which then reads
+    as a property of the feed when it is really a property of our own cadence.
+    Taking the slower of the two leaves a deliberately relaxed setting alone while
+    making it impossible to configure a rate the server has told us not to use.
+
+    Lives here rather than beside the always-on loop because both loops need it
+    and the dependency already runs this way.
+    """
+    if server_requested is None:
+        return requested
+    return max(requested, server_requested)
+
+
 async def poll_once(client: GitHubClient, pages: int = 3, per_page: int = 100) -> list[RawEvent]:
     """Sweep the first ``pages`` pages of /events and dedupe across them."""
     events: list[RawEvent] = []
@@ -92,7 +111,7 @@ async def collect_sample(
                     fh.write(event.model_dump_json() + "\n")
                 counters.record_cycle(fetched=len(batch), fresh=len(fresh))
                 if cycle < cycles - 1:
-                    await asyncio.sleep(interval_s)
+                    await asyncio.sleep(effective_interval(interval_s, client.last_poll_interval_s))
     logger.info(
         "poll sample complete: cycles=%d fetched=%d fresh=%d duplicates=%d rate_limited=%d out=%s",
         counters.cycles,

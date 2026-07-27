@@ -201,3 +201,50 @@ async def test_rate_limit_headers_are_tracked(
         assert client.last_rate_limit is not None
         assert client.last_rate_limit.limit == 5000
         assert client.last_rate_limit.remaining == 4999
+
+
+@respx.mock
+async def test_poll_interval_is_taken_from_the_server(settings: Settings) -> None:
+    # GitHub states how often it is willing to be polled. Reading that off the
+    # response instead of hardcoding 60 keeps the number true if GitHub ever
+    # changes it — the same reason the rate limit is read rather than assumed.
+    respx.get(EVENTS_URL).mock(
+        return_value=httpx.Response(200, json=[], headers={"X-Poll-Interval": "60"})
+    )
+    async with GitHubClient(settings) as client:
+        await client.list_public_events()
+
+        assert client.last_poll_interval_s == 60.0
+
+
+@respx.mock
+async def test_a_response_without_the_header_is_not_permission_to_speed_up(
+    settings: Settings,
+) -> None:
+    # Sticky by design: once the server has asked for a cadence, a later response
+    # that merely omits the header must not silently restore a faster one.
+    respx.get(EVENTS_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=[], headers={"X-Poll-Interval": "60"}),
+            httpx.Response(200, json=[]),  # no header at all
+        ]
+    )
+    async with GitHubClient(settings) as client:
+        await client.list_public_events()
+        await client.list_public_events(page=2)
+
+        assert client.last_poll_interval_s == 60.0
+
+
+@respx.mock
+async def test_a_nonsense_poll_interval_is_ignored(settings: Settings) -> None:
+    # The header is server-controlled input, so it is parsed defensively: a value
+    # that is not a plain integer leaves the cadence unchanged rather than raising
+    # inside the poll loop or being coerced into something arbitrary.
+    respx.get(EVENTS_URL).mock(
+        return_value=httpx.Response(200, json=[], headers={"X-Poll-Interval": "soon"})
+    )
+    async with GitHubClient(settings) as client:
+        await client.list_public_events()
+
+        assert client.last_poll_interval_s is None

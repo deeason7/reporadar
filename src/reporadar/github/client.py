@@ -67,6 +67,12 @@ class GitHubClient:
         )
         self._etags: dict[str, str] = {}
         self.last_rate_limit: RateLimit | None = None
+        # How often the server is willing to be polled, as it stated on the last
+        # response that said so. It is guidance we are given rather than a number
+        # to pick, so it is recorded here beside the rate limit and applied by the
+        # loops that sleep. Sticky: a response that omits the header is not
+        # permission to speed back up.
+        self.last_poll_interval_s: float | None = None
 
     async def __aenter__(self) -> GitHubClient:
         return self
@@ -103,6 +109,9 @@ class GitHubClient:
                 continue
 
             self.last_rate_limit = RateLimit.from_headers(resp.headers)
+            poll_interval = self._poll_interval_s(resp.headers)
+            if poll_interval is not None:
+                self.last_poll_interval_s = poll_interval
 
             if resp.status_code in (403, 429) and self._looks_rate_limited(resp):
                 raise RateLimitedError(self._retry_after_s(resp))
@@ -128,6 +137,12 @@ class GitHubClient:
         if status == 304 or body is None:
             return []
         return [parse_event(item) for item in body]
+
+    @staticmethod
+    def _poll_interval_s(headers: httpx.Headers) -> float | None:
+        """The server's requested minimum seconds between polls, if it stated one."""
+        value = headers.get("x-poll-interval")
+        return float(value) if value is not None and value.isdigit() else None
 
     @staticmethod
     def _looks_rate_limited(resp: httpx.Response) -> bool:

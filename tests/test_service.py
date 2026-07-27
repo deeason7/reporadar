@@ -11,6 +11,7 @@ import respx
 
 from reporadar.config import Settings
 from reporadar.github.events import RawEvent
+from reporadar.ingest.poller import effective_interval
 from reporadar.ingest.service import MAX_RATE_LIMIT_PAUSE_S, poll_stream
 
 EVENTS_URL = "https://api.github.com/events"
@@ -224,3 +225,25 @@ async def test_a_stop_cuts_short_a_rate_limit_pause(
 
     assert counters.rate_limited == 1
     assert counters.cycles == 1  # a throttled cycle still counts: the run did look
+
+
+def test_the_servers_cadence_overrides_a_faster_configured_one() -> None:
+    # The defect this fixes: `serve` defaulted to 10s while GitHub asks for 60 on
+    # every response. Polling faster cannot surface more events — the endpoint is
+    # cached for longer than that — it only spends quota re-reading a page we
+    # already hold and books the result as duplicates, which then reads as a
+    # property of the feed rather than of our own cadence.
+    assert effective_interval(10.0, 60.0) == 60.0
+
+
+def test_a_slower_configured_interval_is_left_alone() -> None:
+    # The server states a *minimum*. An operator who deliberately polls gently
+    # must not be sped up to it.
+    assert effective_interval(300.0, 60.0) == 300.0
+
+
+def test_without_server_guidance_the_configured_interval_stands() -> None:
+    # Before the first response, and against any endpoint that states nothing,
+    # there is no guidance to honour — inventing a default here would be a
+    # number nothing measured.
+    assert effective_interval(10.0, None) == 10.0
