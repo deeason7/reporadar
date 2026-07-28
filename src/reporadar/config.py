@@ -67,6 +67,17 @@ class Settings(BaseSettings):
         """Where GH Archive hourly files land (.json.gz, exactly as published)."""
         return self.data_dir / "raw" / "gharchive"
 
+    @property
+    def lake_dir(self) -> Path:
+        """Root of the columnar copy of the archive (Parquet, partitioned dt/hr).
+
+        Derived from ``data_dir`` like the two above rather than being its own
+        setting: one knob for where data lives is easier to deploy correctly than
+        three, and putting the lake on its own disk is an additive change if a
+        deployment ever needs it.
+        """
+        return self.data_dir / "lake"
+
 
 @lru_cache
 def get_settings() -> Settings:

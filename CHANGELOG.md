@@ -52,7 +52,6 @@ All notable changes to this project are documented here, per
   poll and consume loops remember before an id counts as fresh again. It trades memory against
   the duplication horizon, so a deployment can size it to its own traffic from the environment
   rather than passing a flag on every restart. A window below 1 is refused at startup.
-
 - The capture service now measures how much of the feed it is actually seeing, using nothing
   but the feed itself. Public event ids run in near sequence, so the distance the feed travels
   between two polls says how many events went by, and the poller knows how many of those it
@@ -62,6 +61,19 @@ All notable changes to this project are documented here, per
   because a constant would quietly stop being true. It is published as an estimate — absent
   rather than zero when a cycle cannot support one, such as the first cycle of a run or a
   repeated page — and it rests on the stated assumption that a returned page is contiguous.
+- Archive hours can be converted into a columnar store: one Parquet file per hour, laid out as
+  `dt=<date>/hr=<hour>` and compressed with zstd. The published gzip files are whole-file and
+  row-oriented, so any question asked of them decompresses everything; against the same three
+  hours, counting the distinct event types took 0.67 s over the gzip and 0.001 s over the
+  columnar copy, which is the entire reason the copy exists. It is also smaller than its source
+  (0.76x measured), so keeping both costs little. The column list is written down rather than
+  inferred, because a reader that guesses the shape of a nested field from the first rows will
+  fail later on a row carrying a key it never sampled — and whether it fails depends on which
+  columns a query happens to select, which is worse than failing outright. Event payloads are
+  therefore kept as JSON: they differ between events of the very same type, so a fixed shape
+  would turn each new key into a rejected hour. Each hour is staged and renamed into place, and
+  is checked against the hour it claims to be before that happens: a truncated or misfiled hour
+  still reads as valid data, and nothing downstream could tell it from a quiet one.
 
 ### Fixed
 - The poller now honours the cadence the API asks for. Every /events response states a minimum
