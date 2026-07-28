@@ -84,6 +84,20 @@ All notable changes to this project are documented here, per
   when a late one arrives, and a completed hour is never quietly downgraded by a passing
   failure. The table enforces its own rules, so a counted hour cannot be recorded without its
   count even by a future writer that forgets.
+- One archive hour can now be taken from the publisher into the columnar store in a single
+  step that records what became of it. The outcomes are the design: an hour that arrived is
+  recorded with its counts, an hour the publisher will never release is recorded so the scan
+  stops asking, and an hour that has merely not appeared yet is recorded nowhere at all —
+  its absence is what makes the next pass try again, so there is no schedule to miss and
+  nothing to replay after downtime. Only a genuine "not found" says anything about the hour
+  itself; a server error or a dropped connection is a fact about the request and leaves the
+  hour outstanding rather than written off. An hour is given a full day to appear before it
+  is called permanently absent, because that verdict is never revisited while publication
+  normally takes minutes. An hour that arrives and cannot be read is a third outcome again:
+  recorded, so it is not retried forever, and never counted as coverage — but failures
+  meaning the software is wrong rather than the file are deliberately left uncaught, so one
+  mistake cannot mark a whole range unreadable. The fetch and the conversion both run off
+  the event loop, so a range can be ingested several hours at a time.
 
 ### Fixed
 - The poller now honours the cadence the API asks for. Every /events response states a minimum
