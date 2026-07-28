@@ -74,6 +74,16 @@ All notable changes to this project are documented here, per
   would turn each new key into a rejected hour. Each hour is staged and renamed into place, and
   is checked against the hour it claims to be before that happens: a truncated or misfiled hour
   still reads as valid data, and nothing downstream could tell it from a quiet one.
+- Ingested archive hours are now recorded, one row per hour, so the system knows what it has
+  without listing the store: which hours are present and counted, which the publisher does not
+  have, and which could not be trusted. The record holds outcomes rather than schedules, so
+  "what is still missing" is a question rather than a replay — downtime, a partial failure and
+  an hour published late all resolve on the next pass with nothing to re-run. Hours the
+  publisher has not released yet are deliberately absent from it rather than marked pending,
+  because absence is what makes the next pass pick them up. A recorded hour can be corrected
+  when a late one arrives, and a completed hour is never quietly downgraded by a passing
+  failure. The table enforces its own rules, so a counted hour cannot be recorded without its
+  count even by a future writer that forgets.
 
 ### Fixed
 - The poller now honours the cadence the API asks for. Every /events response states a minimum
