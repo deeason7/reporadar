@@ -25,6 +25,7 @@ from reporadar.ingest.coverage import CoverageTracker, numeric_ids
 from reporadar.ingest.dedup import DEFAULT_SEEN_WINDOW, RecentIds
 from reporadar.ingest.metrics import PollCounters
 from reporadar.ingest.poller import MAX_RATE_LIMIT_PAUSE_S, effective_interval, poll_once
+from reporadar.ingest.signals import interruptible_sleep
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ async def poll_stream(
                 pause = min(exc.retry_after_s, MAX_RATE_LIMIT_PAUSE_S)
                 counters.record_rate_limited()
                 logger.warning("rate limited; pausing %.0fs then resuming", pause)
-                await _interruptible_sleep(pause, stop)
+                await interruptible_sleep(pause, stop)
                 continue
             cycle_coverage = coverage.record(numeric_ids(event.id for event in batch))
             fresh = [event for event in batch if seen.add(event.id)]
@@ -101,17 +102,6 @@ async def poll_stream(
                         interval_s,
                     )
                 announced_interval = sleep_s
-            await _interruptible_sleep(sleep_s, stop)
+            await interruptible_sleep(sleep_s, stop)
     logger.info("poll stream stopped: %s", counters.as_dict())
     return counters
-
-
-async def _interruptible_sleep(seconds: float, stop: asyncio.Event | None) -> None:
-    """Sleep ``seconds``, but wake immediately if ``stop`` is set."""
-    if stop is None:
-        await asyncio.sleep(seconds)
-        return
-    try:
-        await asyncio.wait_for(stop.wait(), timeout=seconds)
-    except TimeoutError:
-        pass  # the interval elapsed without a stop — the normal path

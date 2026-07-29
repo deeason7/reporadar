@@ -98,6 +98,20 @@ All notable changes to this project are documented here, per
   meaning the software is wrong rather than the file are deliberately left uncaught, so one
   mistake cannot mark a whole range unreadable. The fetch and the conversion both run off
   the event loop, so a range can be ingested several hours at a time.
+- Archive hours now ingest themselves. A loop asks the record which closed hours are still
+  outstanding and converts them, a few at a time, until none are left. There is no schedule
+  and therefore no missed run: downtime, a partial failure and an hour published late all
+  resolve on the next pass. A timer could not substitute, because a missed timer fires once
+  when the machine returns rather than once per interval it slept through. Hours that have
+  not finished are never attempted — a partial hour filed as a whole one is indistinguishable
+  from a quiet one ever after. Work is bounded two ways: how many hours convert at once,
+  since the publisher is somebody else's server, and how far back each scan looks, so that a
+  loop cannot turn one bad night into a week of surprise traffic. Anything older is reached
+  by asking for a range explicitly, which is also what picks up hours that failed and have
+  since been fixed. Database writes are serialised behind the concurrent conversions, because
+  one connection cannot carry two overlapping operations. The run reports four numbers rather
+  than two: hours converted, hours the publisher does not have, hours that could not be
+  trusted, and hours deliberately left for the next pass.
 
 ### Fixed
 - The poller now honours the cadence the API asks for. Every /events response states a minimum

@@ -51,3 +51,21 @@ def _request_stop(sig: signal.Signals, stop: asyncio.Event) -> None:
     if not stop.is_set():  # a repeated signal is a no-op, not a re-announcement
         logger.info("received %s; stopping after the current cycle", sig.name)
         stop.set()
+
+
+async def interruptible_sleep(seconds: float, stop: asyncio.Event | None) -> None:
+    """Sleep ``seconds``, but wake immediately if ``stop`` is set.
+
+    Lives beside the stop event rather than inside any one loop: waiting out an
+    interval is where a service spends nearly all of its life, so it is where a
+    shutdown request would otherwise be ignored longest. The second loop to need
+    it is what moved it here — one copy per service would drift, and the drift
+    would show up as one of them ignoring SIGTERM for a whole interval.
+    """
+    if stop is None:
+        await asyncio.sleep(seconds)
+        return
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=seconds)
+    except TimeoutError:
+        pass  # the interval elapsed without a stop — the normal path

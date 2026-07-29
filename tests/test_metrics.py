@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from reporadar.ingest.metrics import ConsumeCounters, PollCounters
+from reporadar.ingest.ledger import HourStatus
+from reporadar.ingest.metrics import ArchiveCounters, ConsumeCounters, PollCounters
 
 
 def test_new_counters_start_at_zero() -> None:
@@ -83,3 +84,45 @@ def test_consume_counters_as_dict_snapshots_all_fields_including_duplicates() ->
         "dead_lettered": 2,
         "duplicates": 2,
     }
+
+
+def test_archive_counters_count_each_outcome_as_itself() -> None:
+    # The four outcomes are not interchangeable: an hour left deliberately
+    # unrecorded is the loop's most common healthy state, and folding it into
+    # either successes or errors would hide exactly that.
+    c = ArchiveCounters()
+    c.record_pass(due=4)
+    c.record_hour(status=HourStatus.INGESTED, events=100)
+    c.record_hour(status=HourStatus.MISSING, events=None)
+    c.record_hour(status=HourStatus.FAILED, events=None)
+    c.record_hour(status=None, events=None)
+
+    assert c.as_dict() == {
+        "passes": 1,
+        "due": 4,
+        "ingested": 1,
+        "missing": 1,
+        "failed": 1,
+        "outstanding": 1,
+        "events": 100,
+    }
+
+
+def test_a_pass_that_found_nothing_still_counts_as_a_pass() -> None:
+    # Otherwise a healthy, quiet loop is indistinguishable from a stopped one.
+    c = ArchiveCounters()
+    c.record_pass(due=0)
+
+    assert c.passes == 1
+    assert c.due == 0
+    assert c.ingested == 0
+
+
+def test_only_an_ingested_hour_contributes_events() -> None:
+    # A missing or failed hour has no count, and 'no count' must never be
+    # summed as zero into a figure that reads as coverage.
+    c = ArchiveCounters()
+    c.record_hour(status=HourStatus.INGESTED, events=50)
+    c.record_hour(status=HourStatus.FAILED, events=99)
+
+    assert c.events == 50

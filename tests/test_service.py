@@ -34,7 +34,7 @@ def _throttled(retry_after: str) -> httpx.Response:
 def slept(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     """Record what the loop asks to sleep for, without actually waiting.
 
-    Patched at ``asyncio.sleep`` rather than at ``_interruptible_sleep``: the
+    Patched at ``asyncio.sleep`` rather than at ``interruptible_sleep``: the
     interesting mutations are the ones that bypass the interruptible wrapper, and
     a double that sits above them would let the real sleep through — turning a
     failing assertion into a two-minute hang.

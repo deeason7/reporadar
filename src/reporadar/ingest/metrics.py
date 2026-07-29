@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from reporadar.ingest.ledger import HourStatus
+
 
 @dataclass
 class PollCounters:
@@ -101,3 +103,44 @@ class ConsumeCounters:
         snapshot = asdict(self)
         snapshot["duplicates"] = self.duplicates
         return snapshot
+
+
+@dataclass
+class ArchiveCounters:
+    """Monotonic counters accumulated over one archive-ingest run.
+
+    ``outstanding`` is the one that needs explaining: it counts hours that were
+    attempted and deliberately left unrecorded — not published yet, or a failure
+    that says nothing about the hour. They are neither successes nor errors, and
+    folding them into either would hide the loop's most common healthy state.
+    """
+
+    passes: int = 0  # scans of the ledger for outstanding hours
+    due: int = 0  # closed, unsettled hours the scans found
+    ingested: int = 0  # hours converted and recorded
+    missing: int = 0  # hours written off as never published
+    failed: int = 0  # hours that arrived and could not be trusted
+    outstanding: int = 0  # hours attempted and deliberately left for the next pass
+    events: int = 0  # events across every ingested hour
+
+    def record_pass(self, *, due: int) -> None:
+        """Account for one scan, whatever it found (including nothing)."""
+        self.passes += 1
+        self.due += due
+
+    def record_hour(self, *, status: HourStatus | None, events: int | None) -> None:
+        """Account for one ingest attempt's outcome."""
+        if status is None:
+            self.outstanding += 1
+            return
+        if status is HourStatus.INGESTED:
+            self.ingested += 1
+            self.events += events or 0
+        elif status is HourStatus.MISSING:
+            self.missing += 1
+        else:
+            self.failed += 1
+
+    def as_dict(self) -> dict[str, int]:
+        """Snapshot — the machine-readable seam."""
+        return asdict(self)
