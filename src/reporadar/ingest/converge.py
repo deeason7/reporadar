@@ -91,6 +91,7 @@ async def converge_once(
     retry_failed: bool = False,
     base_url: str = DEFAULT_BASE_URL,
     grace: timedelta = DEFAULT_PUBLICATION_GRACE,
+    keep_source: bool = True,
     counters: ArchiveCounters | None = None,
 ) -> ArchiveCounters:
     """One pass: ask what is outstanding, ingest it, and report what happened.
@@ -133,6 +134,7 @@ async def converge_once(
                 now=now,
                 base_url=base_url,
                 grace=grace,
+                keep_source=keep_source,
             )
 
     reports = await asyncio.gather(*(one(day, hour) for day, hour in due))
@@ -152,6 +154,7 @@ async def converge_forever(
     interval_s: float = DEFAULT_SCAN_INTERVAL_S,
     base_url: str = DEFAULT_BASE_URL,
     grace: timedelta = DEFAULT_PUBLICATION_GRACE,
+    keep_source: bool = True,
     max_passes: int | None = None,
     stop: asyncio.Event | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -188,6 +191,7 @@ async def converge_forever(
             concurrency=concurrency,
             base_url=base_url,
             grace=grace,
+            keep_source=keep_source,
             counters=counters,
         )
         await interruptible_sleep(interval_s, stop)

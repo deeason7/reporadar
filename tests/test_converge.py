@@ -67,6 +67,9 @@ class FakeIngest:
 
     def __init__(self, outcome: HourStatus | None = HourStatus.INGESTED, events: int = 10) -> None:
         self.calls: list[tuple[date, int]] = []
+        # Recorded, not swallowed. **kwargs alone would let a parameter the loop is
+        # supposed to forward go missing without a single test noticing.
+        self.kwargs: list[dict[str, Any]] = []
         self.inflight = 0
         self.max_inflight = 0
         self.outcome = outcome
@@ -74,6 +77,7 @@ class FakeIngest:
 
     async def __call__(self, day: date, hour: int, **kwargs: Any) -> HourReport:
         self.calls.append((day, hour))
+        self.kwargs.append(kwargs)
         self.inflight += 1
         self.max_inflight = max(self.max_inflight, self.inflight)
         # Touch the connection the loop handed us, twice around a yield: this is
@@ -130,6 +134,43 @@ async def test_a_pass_ingests_every_outstanding_closed_hour(
     assert counters.due == 3
     assert counters.ingested == 3
     assert counters.events == 30
+
+
+async def test_the_source_retention_policy_reaches_the_ingest(
+    tmp_path: Path, ingest: FakeIngest
+) -> None:
+    # The loop makes no retention decision of its own; it carries the caller's. Both
+    # values are asserted, because one alone cannot tell a forwarded argument from a
+    # hard-coded literal that happens to match.
+    await _once(FakeConnection([(DAY, 1)]), tmp_path, keep_source=False)
+    await _once(FakeConnection([(DAY, 2)]), tmp_path, keep_source=True)
+
+    assert [kwargs["keep_source"] for kwargs in ingest.kwargs] == [False, True]
+
+
+async def test_the_endless_loop_carries_the_retention_policy_too(
+    tmp_path: Path, ingest: FakeIngest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The always-on caller is the one whose disk actually fills, so the parameter
+    # being accepted by converge_forever and dropped on the way down would be the
+    # expensive version of this bug.
+    async def no_sleep(seconds: float, stop: asyncio.Event | None) -> None:
+        return None
+
+    monkeypatch.setattr(converge_module, "interruptible_sleep", no_sleep)
+
+    await _bounded(
+        converge_forever(
+            FakeConnection([(DAY, 1)]),
+            archive_dir=tmp_path / "raw",
+            lake_dir=tmp_path / "lake",
+            keep_source=False,
+            max_passes=1,
+            clock=lambda: NOW,
+        )
+    )
+
+    assert [kwargs["keep_source"] for kwargs in ingest.kwargs] == [False]
 
 
 async def test_an_hour_that_has_not_closed_is_never_attempted(

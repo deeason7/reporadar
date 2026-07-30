@@ -133,6 +133,98 @@ async def test_a_published_hour_lands_in_the_lake_and_the_ledger(tmp_path: Path)
 
 
 @respx.mock
+async def test_the_converted_source_is_kept_unless_the_caller_says_otherwise(
+    tmp_path: Path,
+) -> None:
+    # The library default is the non-destructive one: a caller that forgets the
+    # argument keeps its files. The commands pass the other value deliberately.
+    respx.get(URL).mock(
+        return_value=httpx.Response(200, content=_published(_event("1", "2026-07-22T22:00:01Z")))
+    )
+
+    report = await _ingest(tmp_path, RecordingConnection(), now=SOON)
+
+    assert report.status is HourStatus.INGESTED
+    assert (tmp_path / "raw" / "2026-07-22-22.json.gz").exists()
+
+
+@respx.mock
+async def test_a_discarded_source_is_removed_once_its_hour_is_recorded(tmp_path: Path) -> None:
+    # The columnar copy is what the ledger points at; the compressed source is a
+    # cache of an immutable published file, and the downloader skips the network
+    # whenever it is present. So after the row exists it buys nothing.
+    respx.get(URL).mock(
+        return_value=httpx.Response(200, content=_published(_event("1", "2026-07-22T22:00:01Z")))
+    )
+    connection = RecordingConnection()
+
+    report = await _ingest(tmp_path, connection, now=SOON, keep_source=False)
+
+    assert report.status is HourStatus.INGESTED
+    assert not (tmp_path / "raw" / "2026-07-22-22.json.gz").exists()
+    # What replaced it is the point: the lake file and the row that claims it.
+    assert (partition_dir(tmp_path / "lake", DAY, HOUR) / PARQUET_FILENAME).exists()
+    (row,) = _recorded(connection)
+    assert row["status"] == "ingested"
+
+
+@respx.mock
+async def test_a_source_survives_a_hour_that_could_not_be_recorded(tmp_path: Path) -> None:
+    # The ordering property, and the only one here that can lose data. If the row
+    # cannot be written the hour is still outstanding, so the next pass needs either
+    # this file or a re-download — deleting it before the ledger agrees would throw
+    # away the only local copy of an hour nothing yet claims. Asserted rather than
+    # commented, because the two orderings differ in no other observable way.
+    respx.get(URL).mock(
+        return_value=httpx.Response(200, content=_published(_event("1", "2026-07-22T22:00:01Z")))
+    )
+
+    class RefusingConnection(RecordingConnection):
+        async def execute(self, query: str, *args: Any) -> None:
+            raise RuntimeError("the ledger is unreachable")
+
+    with pytest.raises(RuntimeError, match="unreachable"):
+        await _ingest(tmp_path, RefusingConnection(), now=SOON, keep_source=False)
+
+    assert (tmp_path / "raw" / "2026-07-22-22.json.gz").exists()
+
+
+@respx.mock
+async def test_a_source_that_cannot_be_removed_does_not_fail_the_hour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A filesystem that refuses is a disk-space problem, not a data problem: the
+    # hour is converted and recorded, and both stay true. Turning that into a failed
+    # hour would write "failed" over a success and send the next pass back for an
+    # hour that is already in the lake.
+    respx.get(URL).mock(
+        return_value=httpx.Response(200, content=_published(_event("1", "2026-07-22T22:00:01Z")))
+    )
+
+    # Scoped to the source file by name. Patching Path.unlink outright also catches
+    # the downloader's own `.part` cleanup, which would make this test fail inside
+    # the fetch and prove nothing about the removal it is aiming at.
+    real_unlink = Path.unlink
+
+    def refuse(self: Path, missing_ok: bool = False) -> None:
+        if self.name == "2026-07-22-22.json.gz":
+            raise PermissionError("read-only file system")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+    connection = RecordingConnection()
+
+    with caplog.at_level("WARNING"):
+        report = await _ingest(tmp_path, connection, now=SOON, keep_source=False)
+
+    assert report.status is HourStatus.INGESTED  # the ingest still succeeded
+    (row,) = _recorded(connection)
+    assert row["status"] == "ingested"
+    assert "could not remove" in caplog.text  # and it is loud about what it left behind
+    assert "safe to delete by hand" in caplog.text
+
+
+@respx.mock
 async def test_an_hour_that_is_not_published_yet_is_recorded_nowhere(tmp_path: Path) -> None:
     """The whole convergence design rests on this: absence is the retry."""
     respx.get(URL).mock(return_value=httpx.Response(404))

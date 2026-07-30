@@ -90,6 +90,10 @@ There is no schedule and so no missed run — downtime, a partial failure and an
 late all resolve on the next pass. `backfill` runs the same pass once over an explicit range of
 days and stops; unlike the service it also retries hours previously found unreadable, which is
 how a fix reaches the hours it fixes. Both need `REPORADAR_POSTGRES_DSN` and no broker at all.
+Both also remove each hour's compressed source once the record of it is written, reporting the
+bytes reclaimed: the columnar copy is what the record points at, while the source is a cache of a
+file the publisher still serves, and keeping both costs two and a half times the disk. Pass
+`--keep-source` when the raw hour is the thing you want to look at.
 `verify` compares the hours record against the columnar store. It exits non-zero when the record
 claims an hour that is not on disk — the failure that matters, because nothing revisits a settled
 hour, so such a gap is permanent and every coverage number reports it as complete. A file that no

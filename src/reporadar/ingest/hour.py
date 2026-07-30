@@ -97,6 +97,7 @@ async def ingest_hour(
     base_url: str = DEFAULT_BASE_URL,
     client: httpx.Client | None = None,
     grace: timedelta = DEFAULT_PUBLICATION_GRACE,
+    keep_source: bool = True,
 ) -> HourReport:
     """Fetch one closed hour, convert it, and record the outcome.
 
@@ -111,6 +112,11 @@ async def ingest_hour(
 
     Whether an hour *needs* ingesting is not asked here. That is the ledger scan's
     job, and keeping it out keeps this function a seam any scheduler can call.
+
+    ``keep_source`` decides what happens to the downloaded archive after it has been
+    converted. It defaults to keeping, so no caller loses a file by forgetting the
+    argument; the long-running commands pass ``False``, because a deployment that
+    keeps every source file grows two and a half times faster than one that does not.
     """
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware; naive datetimes are ambiguous")
@@ -165,6 +171,11 @@ async def ingest_hour(
         written.bytes_written,
         written.path,
     )
+    if not keep_source:
+        # Strictly after the row exists. Until then the hour is still outstanding,
+        # and the next pass needs either this file or a re-download; after it, the
+        # hour is settled and nothing will ask for the source again.
+        _discard_source(archive_path, day, hour)
     return HourReport(
         day,
         hour,
@@ -172,6 +183,45 @@ async def ingest_hour(
         f"ingested {written.events} events",
         events=written.events,
         bytes=written.bytes_written,
+    )
+
+
+def _discard_source(path: Path, day: date, hour: int) -> None:
+    """Delete a converted hour's compressed source, saying how much it reclaimed.
+
+    The source is a cache, not a record: the downloader skips the network whenever
+    the final file is already there, and the archive publishes the same immutable
+    hour indefinitely, so the only thing this file buys after conversion is a
+    re-download that nobody is going to ask for. What the ledger points at is the
+    columnar copy.
+
+    Reported rather than silent, because a version that used to keep these files
+    now removes them, and the first run after that change should be able to say so
+    out loud. The bytes are the interesting part: they are what the disk gets back.
+
+    A filesystem that refuses is a disk-space problem and not a data problem — the
+    hour is converted and recorded, and both of those are true whatever happens
+    here — so it warns and returns rather than turning a successful ingest into a
+    failed one.
+    """
+    try:
+        reclaimed = path.stat().st_size
+        path.unlink()
+    except OSError as exc:
+        logger.warning(
+            "archive hour %s %02d: could not remove the converted source %s (%s); "
+            "it is safe to delete by hand",
+            day,
+            hour,
+            path,
+            exc,
+        )
+        return
+    logger.info(
+        "archive hour %s %02d: removed the converted source, %d bytes reclaimed",
+        day,
+        hour,
+        reclaimed,
     )
 
 

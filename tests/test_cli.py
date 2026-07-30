@@ -433,6 +433,7 @@ def test_archive_serve_wires_the_connection_and_the_convergence_loop(
         lookback_days: int,
         interval_s: float,
         base_url: str,
+        keep_source: bool,
         max_passes: int | None,
         stop: asyncio.Event,
     ) -> ArchiveCounters:
@@ -444,6 +445,7 @@ def test_archive_serve_wires_the_connection_and_the_convergence_loop(
             lookback_days=lookback_days,
             interval_s=interval_s,
             base_url=base_url,
+            keep_source=keep_source,
             max_passes=max_passes,
             stop_set=stop.is_set(),
         )
@@ -482,6 +484,10 @@ def test_archive_serve_wires_the_connection_and_the_convergence_loop(
     assert calls["lookback_days"] == 5
     assert calls["interval_s"] == 0
     assert calls["max_passes"] == 1  # --passes bounds a run; absent it runs forever
+    # The command's policy, and deliberately the opposite of the library default: an
+    # always-on run discards each converted source, so a command that simply omitted
+    # the argument would arrive here as True and fail.
+    assert calls["keep_source"] is False
     assert calls["stop_set"] is False  # a real, un-fired stop event was threaded through
     # Handlers installed before the connection opens and removed after it closes: a
     # SIGTERM arriving during a slow connect should end the run rather than be missed
@@ -497,6 +503,34 @@ def test_archive_serve_wires_the_connection_and_the_convergence_loop(
     assert "stopped:" in result.output
     assert "'ingested': 1" in result.output  # final counters reach the operator
     assert "'events': 157856" in result.output
+
+
+def test_keep_source_overrides_the_always_on_discard_policy(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # The escape hatch for a laptop that wants the raw hours to hand. Worth a test of
+    # its own because the flag and the policy it overrides are a pair: asserting only
+    # the default would leave "the flag does nothing" indistinguishable from success.
+    calls: dict[str, object] = {}
+    _archive_settings(monkeypatch, pinned_cli_settings)
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection([], object()))
+
+    @contextmanager
+    def stop_immediately(*sigs: object) -> Iterator[asyncio.Event]:
+        yield asyncio.Event()
+
+    monkeypatch.setattr(cli, "stop_on_signals", stop_immediately)
+
+    async def fake_converge_forever(connection_arg: object, **kwargs: object) -> ArchiveCounters:
+        calls.update(kwargs)
+        return ArchiveCounters()
+
+    monkeypatch.setattr(cli, "converge_forever", fake_converge_forever)
+
+    result = runner.invoke(cli.app, ["archive-serve", "--passes", "1", "--keep-source"])
+
+    assert result.exit_code == 0
+    assert calls["keep_source"] is True
 
 
 def test_backfill_ensures_the_schema_then_converges_the_given_range_once(
@@ -533,6 +567,7 @@ def test_backfill_ensures_the_schema_then_converges_the_given_range_once(
         concurrency: int,
         retry_failed: bool,
         base_url: str,
+        keep_source: bool,
     ) -> ArchiveCounters:
         calls.update(
             connection=connection_arg,
@@ -542,6 +577,7 @@ def test_backfill_ensures_the_schema_then_converges_the_given_range_once(
             concurrency=concurrency,
             retry_failed=retry_failed,
             base_url=base_url,
+            keep_source=keep_source,
         )
         order.append("converge")
         counters = ArchiveCounters()
@@ -560,6 +596,7 @@ def test_backfill_ensures_the_schema_then_converges_the_given_range_once(
     # True by default, and the whole reason an explicit range exists: the always-on
     # loop skips failed hours so it cannot spin, so nothing else ever retries them.
     assert calls["retry_failed"] is True
+    assert calls["keep_source"] is False  # same policy as the loop, opposite the library
     # ingest_hour rejects a naive clock outright, so a tz-less now here would fail
     # only once a real hour was attempted — long after this command returned 0.
     now = calls["now"]

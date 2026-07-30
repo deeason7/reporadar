@@ -157,6 +157,7 @@ def archive_serve(
     concurrency: int = DEFAULT_CONCURRENCY,
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
     passes: int | None = None,
+    keep_source: bool = False,
 ) -> None:
     """Keep the lake converged on the published archive: scan for gaps, ingest, repeat."""
     logging.basicConfig(
@@ -181,6 +182,12 @@ def archive_serve(
                     # unreachable host in a test or a mirror in a deployment is a
                     # setting, and fetch-archive already honours the same one.
                     base_url=settings.archive_base,
+                    # A converted hour's source is a cache of an immutable file the
+                    # publisher still serves, so an always-on run discards it: keeping
+                    # every one grows the data directory two and a half times faster,
+                    # and the disk is the first thing a long-lived deployment runs out
+                    # of. --keep-source is for a laptop that wants the raw hour to hand.
+                    keep_source=keep_source,
                     max_passes=passes,
                     stop=stop,
                 )
@@ -195,6 +202,7 @@ def backfill(
     last_day: str,
     concurrency: int = DEFAULT_CONCURRENCY,
     retry_failed: bool = True,
+    keep_source: bool = False,
 ) -> None:
     """Ingest one explicit range of archive hours (DAYs = YYYY-MM-DD, both inclusive)."""
     logging.basicConfig(
@@ -240,6 +248,9 @@ def backfill(
                 # ones the always-on loop skips so it cannot spin.
                 retry_failed=retry_failed,
                 base_url=settings.archive_base,
+                # Same policy as the always-on loop, and for a sharper reason here: a
+                # range is the command most likely to be pointed at a month.
+                keep_source=keep_source,
             )
 
     counters = asyncio.run(_run())

@@ -161,6 +161,18 @@ All notable changes to this project are documented here, per
   writes: a checker that repaired what it found would become a second author of the record, which is
   the situation it exists to detect.
 
+### Changed
+- The ingest commands no longer keep an archive hour's compressed source after converting it.
+  A converted hour exists twice: as the downloaded `.json.gz` and as the columnar copy the hours
+  record points at. Keeping both costs two and a half times the disk of keeping one — 34.5 MB per
+  hour against 14.0, measured over 35 hours — and buys only the ability to skip a re-download of a
+  file the publisher still serves unchanged. On a service that is not turned off, that difference
+  decides whether a disk lasts a year, so `archive-serve` and `backfill` now remove the source once
+  the hours record has been written, and say how many bytes each removal reclaimed. Removal happens
+  strictly after that record exists: until then the hour is still outstanding and the next pass
+  needs either the file or a fresh download. Pass `--keep-source` to keep them, which is what a
+  workstation wants when the raw hour is the thing being examined.
+
 ### Fixed
 - The poller now honours the cadence the API asks for. Every /events response states a minimum
   interval between polls, and the service was configured to poll six times faster than that,
