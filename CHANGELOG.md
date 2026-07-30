@@ -145,6 +145,21 @@ All notable changes to this project are documented here, per
   Continuous integration now builds the image **and runs it**: the first version of it built,
   exported and tagged without a warning, then failed on startup, because the project had been
   installed as a link to a source directory the runtime layer deliberately does not carry.
+- `reporadar verify` checks the hours record against the columnar store it describes. Two records of
+  the same fact existed and had never been compared: every counter, gap scan and coverage number
+  reads the record, so a row claiming an hour that is not on disk is not a small inconsistency but a
+  number that misreports, and it misreports in the reassuring direction — nothing revisits a settled
+  hour, so the hole is permanent and invisible. Which direction of disagreement matters decides the
+  exit code: a claim with no file fails the check, while a file no row claims is reported and does
+  not, because it misstates nothing and the next scan simply converts that hour again. By default the
+  check costs one filesystem call per recorded hour and compares the stored size as well as presence,
+  which catches a truncated or replaced file that mere existence would pass. `--counts` additionally
+  compares event counts, reading the whole store in a single query — and reading the partition
+  columns kept *inside* each file rather than the ones implied by its directory name, so an hour that
+  was copied or misfiled cannot verify by describing where it happens to sit. It exits non-zero when
+  anything is unbacked, so a scheduled run cannot report success over a store with holes. It never
+  writes: a checker that repaired what it found would become a second author of the record, which is
+  the situation it exists to detect.
 
 ### Fixed
 - The poller now honours the cadence the API asks for. Every /events response states a minimum

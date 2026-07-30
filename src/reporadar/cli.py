@@ -29,6 +29,7 @@ from reporadar.ingest.signals import stop_on_signals
 from reporadar.ingest.sinks import HourlyNdjsonSink, TeeSink
 from reporadar.ingest.store import pg_connection, pg_store
 from reporadar.ingest.topics import provision_topics, require_topics
+from reporadar.ingest.verify import VerifyReport, verify_lake
 
 app = typer.Typer(help="RepoRadar — ecosystem intelligence tooling", no_args_is_help=True)
 
@@ -243,6 +244,44 @@ def backfill(
 
     counters = asyncio.run(_run())
     typer.echo(f"done: {counters.as_dict()}")
+
+
+@app.command()
+def verify(counts: bool = False) -> None:
+    """Check that every hour the record claims is in the columnar store really is."""
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    settings = get_settings()
+
+    async def _run() -> VerifyReport:
+        async with pg_connection(settings) as connection:
+            # Read-only, so the schema is ensured rather than assumed: verifying a
+            # database that has never been ingested into should report "nothing
+            # claimed", not fail on a missing table.
+            await create_schema(connection)
+            return await verify_lake(connection, lake_dir=settings.lake_dir, check_counts=counts)
+
+    report = asyncio.run(_run())
+    for finding in report.findings:
+        marker = "UNBACKED" if finding.unbacked else "surplus "
+        typer.echo(
+            f"{marker} {finding.day} {finding.hour:02d}  {finding.problem}: {finding.detail}"
+        )
+    typer.echo(report.as_dict())
+    if report.unsized:
+        # Not a failure, but the report would otherwise imply a stronger check ran
+        # than actually did on those hours.
+        typer.echo(f"note: {report.unsized} hour(s) carry no recorded size; presence only")
+    if not report.ok:
+        # Only unbacked claims fail. A surplus file misreports nothing — the next
+        # scan converts that hour again — while a claim with no file is a number
+        # that lies, and nothing revisits a settled hour to discover it.
+        typer.echo(
+            f"FAILED: {len(report.unbacked)} of {report.claimed} recorded hour(s) are not "
+            "backed by the file they claim."
+        )
+        raise typer.Exit(code=1)
 
 
 @app.command()

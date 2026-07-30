@@ -149,6 +149,16 @@ ORDER BY calendar.day, calendar.hour
 # returns a type the test double (handing back plain ints) never produces, and the
 # suite would be green against a shape the database cannot emit. Casting in SQL
 # fixes it at the source rather than widening every reader to accept both.
+# Every hour the ledger claims is in the lake, with what it claims about it. The
+# read side of RECORD_HOUR: those two columns are written as a description of a
+# file, and nothing has ever checked that the description still matches.
+INGESTED_HOURS: Final = """
+SELECT day, hour, events, bytes
+FROM archive_hours
+WHERE status = 'ingested'
+ORDER BY day, hour
+"""
+
 COUNT_BY_STATUS: Final = """
 SELECT status, count(*)::bigint, coalesce(sum(events), 0)::bigint
 FROM archive_hours
@@ -221,6 +231,30 @@ async def pending_hours(
         settled.append(str(HourStatus.FAILED))
     rows = await connection.fetch(PENDING_HOURS, first_day, last_day, settled)
     return [(_as_date(row[0]), _as_int(row[1])) for row in rows]
+
+
+async def ingested_hours(connection: Connection) -> list[HourRecord]:
+    """Every hour recorded as in the lake, oldest first.
+
+    Returns the write shape, because a row read back *is* a ledger row and a
+    second near-identical dataclass would only invite the two to drift.
+
+    ``bytes`` stays ``int | None``: the table requires an ingested hour to carry
+    its event count and deliberately does not require its size, so a row written
+    before that column meant anything cannot be size-checked. That is a different
+    fact from "the size disagrees", and the type is what keeps them apart.
+    """
+    rows = await connection.fetch(INGESTED_HOURS)
+    return [
+        HourRecord(
+            day=_as_date(row[0]),
+            hour=_as_int(row[1]),
+            status=HourStatus.INGESTED,
+            events=_as_int(row[2]),
+            bytes=None if row[3] is None else _as_int(row[3]),
+        )
+        for row in rows
+    ]
 
 
 async def status_counts(connection: Connection) -> dict[HourStatus, tuple[int, int]]:

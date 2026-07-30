@@ -22,6 +22,7 @@ from reporadar.ingest.ledger import (
     HourRecord,
     HourStatus,
     create_schema,
+    ingested_hours,
     pending_hours,
     record_hour,
     status_counts,
@@ -218,6 +219,30 @@ async def test_the_ledger_round_trips_against_a_real_database() -> None:
         counts = await status_counts(connection)
         assert counts == {HourStatus.INGESTED: (1, 100)}
         assert all(type(hours) is int and type(events) is int for hours, events in counts.values())
+
+        # The read the verifier uses. Its unit tests replay canned rows, so this is
+        # the only place the query is known to parse and to return the columns in
+        # the order the mapping assumes — and the only place the driver's own types
+        # are involved, which is where this project has been bitten before.
+        claimed = await ingested_hours(connection)
+        assert [(row.day, row.hour, row.events, row.bytes) for row in claimed] == [
+            (DAY, 5, 100, 10)
+        ]
+        assert claimed[0].status is HourStatus.INGESTED
+        assert type(claimed[0].events) is int and type(claimed[0].bytes) is int
+
+        # Only settled successes: a missing hour is an expected outcome, and a
+        # verifier told about it would report a lake file that was never meant to
+        # exist. The filter is in SQL, so only a server can prove it applies.
+        await record_hour(connection, HourRecord(DAY, 6, HourStatus.MISSING, detail="404"), now=NOW)
+        await record_hour(connection, HourRecord(DAY, 7, HourStatus.FAILED, detail="bad"), now=NOW)
+        assert [(row.day, row.hour) for row in await ingested_hours(connection)] == [(DAY, 5)]
+
+        # A null size must survive as None rather than arriving as 0, or every row
+        # written before that column meant anything fails its size comparison.
+        await record_hour(connection, HourRecord(DAY, 8, HourStatus.INGESTED, events=7), now=NOW)
+        sizes = {row.hour: row.bytes for row in await ingested_hours(connection)}
+        assert sizes == {5: 10, 8: None}
 
         # The CHECK constraints are real, not advisory.
         with pytest.raises(asyncpg.PostgresError):

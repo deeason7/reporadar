@@ -66,6 +66,7 @@ reporadar serve                                              # always-on capture
 reporadar consume                                            # stream → validated store
 reporadar archive-serve                                      # keep the columnar store converged
 reporadar backfill 2026-07-21 2026-07-22                     # ingest one explicit range of days
+reporadar verify                                             # does the store match its record?
 reporadar provision                                          # create the Kafka topics
 reporadar capture-rate <archive.json.gz> <live.ndjson>       # completeness KPI
 ```
@@ -89,6 +90,12 @@ There is no schedule and so no missed run — downtime, a partial failure and an
 late all resolve on the next pass. `backfill` runs the same pass once over an explicit range of
 days and stops; unlike the service it also retries hours previously found unreadable, which is
 how a fix reaches the hours it fixes. Both need `REPORADAR_POSTGRES_DSN` and no broker at all.
+`verify` compares the hours record against the columnar store. It exits non-zero when the record
+claims an hour that is not on disk — the failure that matters, because nothing revisits a settled
+hour, so such a gap is permanent and every coverage number reports it as complete. A file that no
+row claims is reported without failing: it misstates nothing, and the next scan converts that hour
+again. The default check is one filesystem call per recorded hour and compares the stored size as
+well as presence; `--counts` also compares event counts, which reads the whole store in one query.
 `capture-rate` is only meaningful when the live sample's window overlaps the archive hour.
 
 ## Local stack

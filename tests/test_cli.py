@@ -17,6 +17,7 @@ from reporadar.github.events import RawEvent
 from reporadar.ingest.ledger import HourStatus
 from reporadar.ingest.metrics import ArchiveCounters, ConsumeCounters, PollCounters
 from reporadar.ingest.sinks import EventSink
+from reporadar.ingest.verify import Finding, Problem, VerifyReport
 
 runner = CliRunner()
 
@@ -599,3 +600,133 @@ def test_backfill_refuses_a_range_whose_days_are_transposed(
     assert result.exit_code != 0
     assert order == []  # refused on its arguments, before a socket was opened
     assert "FIRST_DAY 2026-07-22 is after LAST_DAY 2026-07-21" in result.output
+
+
+def test_verify_reports_a_clean_lake_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    calls: dict[str, object] = {}
+    order: list[str] = []
+    connection = object()
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection(order, connection))
+
+    async def fake_create_schema(connection_arg: object) -> None:
+        order.append("create schema")
+
+    monkeypatch.setattr(cli, "create_schema", fake_create_schema)
+
+    async def fake_verify_lake(
+        connection_arg: object, *, lake_dir: Path, check_counts: bool
+    ) -> VerifyReport:
+        calls.update(connection=connection_arg, lake_dir=lake_dir, check_counts=check_counts)
+        order.append("verify")
+        return VerifyReport(claimed=3, agreed=3)
+
+    monkeypatch.setattr(cli, "verify_lake", fake_verify_lake)
+
+    result = runner.invoke(cli.app, ["verify"])
+
+    assert result.exit_code == 0
+    assert calls["connection"] is connection
+    assert calls["lake_dir"] == pinned_cli_settings.lake_dir
+    # Reading the lake is opt-in: the default must not scan every partition, and
+    # without this assertion a flipped default would still pass every other test.
+    assert calls["check_counts"] is False
+    # The schema is ensured before the read, so verifying a database nothing has
+    # ingested into reports "nothing claimed" rather than failing on a missing table.
+    assert order == ["open connection", "create schema", "verify", "close connection"]
+    assert "'claimed': 3" in result.output
+
+
+def test_verify_exits_nonzero_when_a_recorded_hour_is_not_backed(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # The deploy-gate contract, and the only reason the command is worth running
+    # from a script: a claim with no file must make the process fail, or a
+    # scheduled check reports success over a lake with permanent holes.
+    order: list[str] = []
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection(order, object()))
+
+    async def fake_create_schema(connection_arg: object) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "create_schema", fake_create_schema)
+
+    async def fake_verify_lake(
+        connection_arg: object, *, lake_dir: Path, check_counts: bool
+    ) -> VerifyReport:
+        report = VerifyReport(claimed=2, agreed=1)
+        report.findings.append(
+            Finding(date(2026, 7, 22), 22, Problem.ABSENT, "no file at lake/dt=2026-07-22/hr=22")
+        )
+        return report
+
+    monkeypatch.setattr(cli, "verify_lake", fake_verify_lake)
+
+    result = runner.invoke(cli.app, ["verify", "--counts"])
+
+    assert result.exit_code == 1
+    assert "UNBACKED" in result.output
+    assert "absent" in result.output
+    assert "1 of 2 recorded hour(s)" in result.output
+
+
+def test_verify_reports_a_surplus_file_without_failing(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # The asymmetry, at the command's edge: a file nothing claims is printed so an
+    # operator sees the drift, but it misreports nothing, so the exit code stays 0.
+    # Without this, "report everything, fail on some of it" would be a claim made
+    # only by a comment.
+    order: list[str] = []
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection(order, object()))
+
+    async def fake_create_schema(connection_arg: object) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "create_schema", fake_create_schema)
+
+    async def fake_verify_lake(
+        connection_arg: object, *, lake_dir: Path, check_counts: bool
+    ) -> VerifyReport:
+        report = VerifyReport(claimed=1, agreed=1)
+        report.findings.append(
+            Finding(date(2026, 7, 22), 21, Problem.UNRECORDED, "file with no ingested row")
+        )
+        return report
+
+    monkeypatch.setattr(cli, "verify_lake", fake_verify_lake)
+
+    result = runner.invoke(cli.app, ["verify"])
+
+    assert result.exit_code == 0
+    assert "surplus" in result.output
+    assert "unrecorded" in result.output
+    assert "UNBACKED" not in result.output
+
+
+def test_verify_says_when_it_could_only_check_presence(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # A row with no recorded size gets a weaker check than the others. Counting it
+    # among the agreed without saying so would overstate what ran.
+    order: list[str] = []
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection(order, object()))
+
+    async def fake_create_schema(connection_arg: object) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "create_schema", fake_create_schema)
+
+    async def fake_verify_lake(
+        connection_arg: object, *, lake_dir: Path, check_counts: bool
+    ) -> VerifyReport:
+        return VerifyReport(claimed=2, agreed=2, unsized=1)
+
+    monkeypatch.setattr(cli, "verify_lake", fake_verify_lake)
+
+    result = runner.invoke(cli.app, ["verify"])
+
+    assert result.exit_code == 0
+    assert "presence only" in result.output
+    assert "1 hour(s) carry no recorded size" in result.output
