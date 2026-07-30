@@ -9,12 +9,13 @@ import httpx
 import pytest
 import respx
 
+from conftest import TEST_API_BASE
 from reporadar.config import Settings
 from reporadar.github.events import RawEvent
 from reporadar.ingest.poller import effective_interval
 from reporadar.ingest.service import MAX_RATE_LIMIT_PAUSE_S, poll_stream
 
-EVENTS_URL = "https://api.github.com/events"
+EVENTS_URL = f"{TEST_API_BASE}/events"
 
 
 def _page(event_dict: dict[str, Any], *ids: str) -> httpx.Response:

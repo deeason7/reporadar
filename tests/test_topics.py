@@ -277,6 +277,24 @@ async def test_both_topics_are_provisioned_with_the_same_partition_count() -> No
     assert len(specs) == 2
 
 
+async def test_the_replication_factor_the_guard_refuses_came_from_settings() -> None:
+    # The shared `settings` fixture is the one field exempt from "never pin the
+    # shipped default", because every admin double here registers a single broker
+    # and a higher factor would fail each test inside this guard rather than on its
+    # own subject. So the flow from setting to guard is proven here instead, with a
+    # factor no single-broker cluster can satisfy: were `required_topics` to ignore
+    # the setting and use the default 1, nothing would be raised at all.
+    settings = Settings(kafka_topic_replication_factor=2)
+    admin = FakeAdmin(brokers=1)
+
+    with pytest.raises(RuntimeError) as caught:
+        await ensure_topics(admin, required_topics(settings))
+
+    assert "replication factor 2" in str(caught.value)
+    assert "REPORADAR_KAFKA_TOPIC_REPLICATION_FACTOR" in str(caught.value)  # names the fix
+    assert admin.created == []  # refused before creating either topic, not after one
+
+
 async def test_verify_refuses_to_start_and_says_how_to_fix_it(
     monkeypatch: pytest.MonkeyPatch, settings: Settings
 ) -> None:

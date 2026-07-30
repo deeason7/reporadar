@@ -11,13 +11,14 @@ import httpx
 import pytest
 import respx
 
+from conftest import TEST_API_BASE
 from reporadar.config import Settings
 from reporadar.github.client import GitHubClient
 from reporadar.github.events import iter_ndjson
 from reporadar.ingest import poller
 from reporadar.ingest.poller import collect_sample, poll_once
 
-EVENTS_URL = "https://api.github.com/events"
+EVENTS_URL = f"{TEST_API_BASE}/events"
 
 
 def _page(event_dict: dict[str, Any], *ids: str) -> httpx.Response:

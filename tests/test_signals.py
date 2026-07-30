@@ -11,12 +11,13 @@ import httpx
 import pytest
 import respx
 
+from conftest import TEST_API_BASE
 from reporadar.config import Settings
 from reporadar.github.events import RawEvent
 from reporadar.ingest.service import poll_stream
 from reporadar.ingest.signals import stop_on_signals
 
-EVENTS_URL = "https://api.github.com/events"
+EVENTS_URL = f"{TEST_API_BASE}/events"
 
 
 async def test_sigterm_sets_the_stop_event(caplog: pytest.LogCaptureFixture) -> None:

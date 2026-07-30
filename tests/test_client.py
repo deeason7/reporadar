@@ -8,10 +8,11 @@ import httpx
 import pytest
 import respx
 
+from conftest import TEST_API_BASE
 from reporadar.config import Settings
 from reporadar.github.client import GitHubClient, RateLimitedError
 
-EVENTS_URL = "https://api.github.com/events"
+EVENTS_URL = f"{TEST_API_BASE}/events"
 
 
 @pytest.fixture()
