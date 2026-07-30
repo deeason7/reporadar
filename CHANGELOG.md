@@ -14,8 +14,8 @@ All notable changes to this project are documented here, per
   order-preserving NDJSON parsing and deduplication.
 - ETag-aware, rate-limit-honest GitHub API client.
 - Live `/events` poller and idempotent GH Archive hour downloads.
-- DuckDB archive analysis (event-type histogram and the capture-rate KPI) and the
-  `reporadar` command-line interface.
+- DuckDB archive analysis (event-type histogram and a live-sample-to-archive-hour
+  comparison) and the `reporadar` command-line interface.
 - Local development stack (Kafka in KRaft mode, TimescaleDB, Grafana) via docker
   compose, with a CI job validating the compose file.
 - Always-on capture service behind `reporadar serve`: an interval-driven poll loop with
@@ -162,6 +162,16 @@ All notable changes to this project are documented here, per
   the situation it exists to detect.
 
 ### Changed
+- The documented ingestion design no longer describes the hourly archive as a complete record to
+  reconcile the live feed against. That framing was written before the two sources were compared,
+  and comparing them did not support it: in the hours sampled they did not share events, and
+  matching on the commit SHA a push carries — a value that cannot differ between two records of the
+  same event — found no meaningful overlap in the adjacent hours either. Whatever the cause, the
+  archive could not serve as ground truth for what the poller missed, so a figure derived by
+  reconciling the two would report the mismatch rather than the miss. The README now states what
+  is actually measured: coverage is estimated from the live feed alone, from the id spacing
+  observable inside each returned page, and it is named an estimated capture ratio rather than a
+  capture rate. The code already behaved this way; only the description had not caught up.
 - The ingest commands no longer keep an archive hour's compressed source after converting it.
   A converted hour exists twice: as the downloaded `.json.gz` and as the columnar copy the hours
   record points at. Keeping both costs two and a half times the disk of keeping one — 34.5 MB per

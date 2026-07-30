@@ -16,16 +16,30 @@ template fallback, so no model is ever a point of failure.
 
 > **Status:** early development. In place today: ingestion foundations (a live `/events`
 > poller with bounded deduplication and run counters, an always-on capture service writing
-> hourly NDJSON files, idempotent GH Archive hour downloads), DuckDB archive analysis with
-> the capture-rate calculator behind the `reporadar` CLI, and a local compose stack (Kafka,
+> hourly NDJSON files, idempotent GH Archive hour downloads), DuckDB archive analysis and
+> feed-coverage estimation behind the `reporadar` CLI, and a local compose stack (Kafka,
 > TimescaleDB, Grafana). The changelog tracks what is actually in place.
 
 ## The honest-ingestion design
 
-GitHub's `/events` API is a **fast but lossy** window (pagination caps what one poller sees at
-peak). [GH Archive](https://www.gharchive.org/) publishes the **complete but hourly** record.
-RepoRadar is built to run both and measure the gap — **capture rate** is a first-class KPI,
-not a footnote.
+GitHub's `/events` API is a **fast but lossy** window: pagination caps what one poller sees at
+peak, so a single poller necessarily misses events. [GH Archive](https://www.gharchive.org/)
+publishes an hourly record of public events. The obvious design is to reconcile one against the
+other and report the difference as a capture rate.
+
+**That design is not used here, and the reason was measured rather than assumed.** In the hours
+sampled, the live feed and the published archive did not share events: none of a live sample's
+event ids appeared in the archive hour covering the same period, and matching instead on the
+commit SHA carried by a push — a value that cannot differ between two records of the same event —
+found no meaningful overlap in the adjacent hours either. Whatever the cause, the archive could
+not act as ground truth for what this poller missed, so a figure derived by reconciling the two
+would report the mismatch rather than the miss.
+
+Coverage is therefore estimated from the live feed alone. Events within a returned page are
+consecutive, which makes the spacing between event ids measurable *inside* each page instead of
+configured; the ids elapsed between two cycles then imply how many events occurred, and the share
+the poller actually captured is an **estimated capture ratio**. It is an estimate, it is named as
+one wherever it appears, and it carries one stated assumption: that a returned page is contiguous.
 
 ```mermaid
 flowchart LR
@@ -34,15 +48,15 @@ flowchart LR
     K --> C[Python consumers: validate, dedupe, DLQ]
     C --> TS[(TimescaleDB: hot 90d)]
     L --> D[DuckDB analytics]
-    L -. reconcile ids .-> R[capture-rate KPI]
-    K -. sampled ids .-> R
+    K -. id spacing per page .-> R[estimated capture ratio]
     TS --> G[Grafana: ops + product]
 ```
 
 Design rules that hold everywhere:
 
-- **Completeness is measured, never assumed.** The live stream is honest about what it misses;
-  the archive is the arbiter.
+- **Coverage is measured, never assumed — and the measurement says what it cannot know.** Where a
+  number cannot be computed honestly the code declines to produce one, rather than returning a
+  plausible zero.
 - **Every model must beat a named dumb baseline on a time-based split** before it ships.
 - **Person-level data is aggregated to repo/ecosystem level** in everything published. No
   individual-maintainer risk pages, ever.
@@ -68,12 +82,12 @@ reporadar archive-serve                                      # keep the columnar
 reporadar backfill 2026-07-21 2026-07-22                     # ingest one explicit range of days
 reporadar verify                                             # does the store match its record?
 reporadar provision                                          # create the Kafka topics
-reporadar capture-rate <archive.json.gz> <live.ndjson>       # completeness KPI
+reporadar capture-rate <archive.json.gz> <live.ndjson>       # compare a sample to an archive hour
 ```
 
 `serve` polls until stopped, writing fresh events into hourly NDJSON files that mirror the
 archive layout **and** publishing them to the Kafka stream that `consume` reads. The files are
-the reconciliation record, so a write failure there stops the run; the stream is best-effort, so
+the capture record, so a write failure there stops the run; the stream is best-effort, so
 a broker outage is logged and counted rather than halting capture. It needs the broker up and
 the live topic provisioned; Ctrl-C or SIGTERM ends the run cleanly after the current cycle.
 `consume` is the other half: it reads the stream into the database, sending anything that
@@ -100,7 +114,11 @@ hour, so such a gap is permanent and every coverage number reports it as complet
 row claims is reported without failing: it misstates nothing, and the next scan converts that hour
 again. The default check is one filesystem call per recorded hour and compares the stored size as
 well as presence; `--counts` also compares event counts, which reads the whole store in one query.
-`capture-rate` is only meaningful when the live sample's window overlaps the archive hour.
+`capture-rate` compares a live sample against one archive hour. It reports the counts and
+refuses to return a ratio when the sample holds events that the archive hour does not — which, on
+the hours measured so far, is what happens, and is why coverage is estimated from the live feed
+instead. It exits non-zero in that case, so a scheduled run cannot record a number that means
+nothing.
 
 ## Local stack
 
