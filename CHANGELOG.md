@@ -112,6 +112,22 @@ All notable changes to this project are documented here, per
   one connection cannot carry two overlapping operations. The run reports four numbers rather
   than two: hours converted, hours the publisher does not have, hours that could not be
   trusted, and hours deliberately left for the next pass.
+- Two commands now drive the archive ingest: `reporadar archive-serve` keeps the columnar
+  store converged on the published archive indefinitely, and `reporadar backfill` converges
+  one explicit range of days and stops. The service ends cleanly on SIGINT/SIGTERM, waking
+  out of its wait rather than finishing it, so stopping a container takes no longer than the
+  hour in flight. The range command differs in three deliberate ways, each following from
+  being asked for rather than scheduled: it retries hours previously found unreadable, which
+  is how a correction reaches the hours it corrects and which the always-on loop must not do
+  or a permanently broken hour would occupy it forever; it creates the record's table if it
+  is absent, since a range is commonly the first thing pointed at a new database; and it
+  refuses a pair of dates given in the wrong order instead of accepting them, because the
+  scan builds its calendar forwards and would otherwise find nothing outstanding and report
+  success — leaving every hour it skipped looking settled to anything that read the record
+  afterwards. Both open one connection for the run and close it on the way out, including
+  after a failure. Neither reconnects, deliberately: a dropped connection ends the run, and
+  because the next one re-derives what is outstanding from the record rather than resuming a
+  plan, a restart costs one interval and loses no work.
 
 ### Fixed
 - The poller now honours the cadence the API asks for. Every /events response states a minimum

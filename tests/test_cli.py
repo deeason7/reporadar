@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from datetime import date
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +14,8 @@ from reporadar import cli
 from reporadar.analysis.capture import CaptureReport
 from reporadar.config import Settings
 from reporadar.github.events import RawEvent
-from reporadar.ingest.metrics import ConsumeCounters, PollCounters
+from reporadar.ingest.ledger import HourStatus
+from reporadar.ingest.metrics import ArchiveCounters, ConsumeCounters, PollCounters
 from reporadar.ingest.sinks import EventSink
 
 runner = CliRunner()
@@ -370,3 +371,231 @@ def test_the_configured_seen_window_applies_when_the_flag_is_absent(
 
     assert result.exit_code == 0
     assert calls["seen_window"] == pinned_cli_settings.seen_window == 1_000
+
+
+#: A publisher that is *not* archive.DEFAULT_BASE_URL. The shared settings fixture
+#: pins archive_base to the shipped default, so "did this come from settings?" is
+#: unanswerable against it — a command that hard-coded the library constant would
+#: pass. Overriding it here is what makes the assertion able to fail.
+MIRROR_BASE = "https://archive-mirror.invalid"
+
+
+def _archive_settings(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> Settings:
+    """The pinned settings with a distinctive publisher, re-pinned onto the CLI."""
+    distinct = settings.model_copy(update={"archive_base": MIRROR_BASE})
+    monkeypatch.setattr(cli, "get_settings", lambda: distinct)
+    return distinct
+
+
+def _recording_connection(
+    order: list[str], connection: object
+) -> Callable[[Settings], AbstractAsyncContextManager[object]]:
+    @asynccontextmanager
+    async def factory(settings: Settings) -> AsyncIterator[object]:
+        order.append("open connection")
+        try:
+            yield connection
+        finally:
+            order.append("close connection")
+
+    return factory
+
+
+def test_archive_serve_wires_the_connection_and_the_convergence_loop(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # The loop itself is proven in test_converge.py; what belongs here is that the
+    # command hands it the right things — every path and bound coming from settings
+    # or the flags rather than from a library default that happens to match.
+    calls: dict[str, object] = {}
+    order: list[str] = []
+    connection = object()
+    archive_settings = _archive_settings(monkeypatch, pinned_cli_settings)
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection(order, connection))
+
+    @contextmanager
+    def recording_stop_on_signals(*sigs: object) -> Iterator[asyncio.Event]:
+        order.append("install handlers")
+        try:
+            yield asyncio.Event()
+        finally:
+            order.append("remove handlers")
+
+    monkeypatch.setattr(cli, "stop_on_signals", recording_stop_on_signals)
+
+    async def fake_converge_forever(
+        connection_arg: object,
+        *,
+        archive_dir: Path,
+        lake_dir: Path,
+        concurrency: int,
+        lookback_days: int,
+        interval_s: float,
+        base_url: str,
+        max_passes: int | None,
+        stop: asyncio.Event,
+    ) -> ArchiveCounters:
+        calls.update(
+            connection=connection_arg,
+            archive_dir=archive_dir,
+            lake_dir=lake_dir,
+            concurrency=concurrency,
+            lookback_days=lookback_days,
+            interval_s=interval_s,
+            base_url=base_url,
+            max_passes=max_passes,
+            stop_set=stop.is_set(),
+        )
+        order.append("converge")
+        counters = ArchiveCounters()
+        counters.record_pass(due=2)
+        counters.record_hour(status=HourStatus.INGESTED, events=157_856)
+        return counters
+
+    monkeypatch.setattr(cli, "converge_forever", fake_converge_forever)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "archive-serve",
+            "--interval-s",
+            "0",
+            "--concurrency",
+            "2",
+            "--lookback-days",
+            "5",
+            "--passes",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls["connection"] is connection  # the opened connection, not a fresh one
+    assert calls["archive_dir"] == archive_settings.archive_dir
+    assert calls["lake_dir"] == archive_settings.lake_dir
+    # The *configured* publisher, and MIRROR_BASE is deliberately not the library
+    # default — so a command that passed archive.DEFAULT_BASE_URL instead of reading
+    # settings fails here rather than matching by coincidence.
+    assert calls["base_url"] == MIRROR_BASE
+    assert calls["concurrency"] == 2
+    assert calls["lookback_days"] == 5
+    assert calls["interval_s"] == 0
+    assert calls["max_passes"] == 1  # --passes bounds a run; absent it runs forever
+    assert calls["stop_set"] is False  # a real, un-fired stop event was threaded through
+    # Handlers installed before the connection opens and removed after it closes: a
+    # SIGTERM arriving during a slow connect should end the run rather than be missed
+    # because the handler was not in place yet. Asserted, because the alternative
+    # nesting produces an identical result and differs only in this ordering.
+    assert order == [
+        "install handlers",
+        "open connection",
+        "converge",
+        "close connection",
+        "remove handlers",
+    ]
+    assert "stopped:" in result.output
+    assert "'ingested': 1" in result.output  # final counters reach the operator
+    assert "'events': 157856" in result.output
+
+
+def test_backfill_ensures_the_schema_then_converges_the_given_range_once(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    calls: dict[str, object] = {}
+    order: list[str] = []
+    installed_handlers: list[str] = []
+    connection = object()
+    _archive_settings(monkeypatch, pinned_cli_settings)
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection(order, connection))
+
+    @contextmanager
+    def recording_stop_on_signals(*sigs: object) -> Iterator[asyncio.Event]:
+        installed_handlers.append("installed")
+        yield asyncio.Event()
+
+    monkeypatch.setattr(cli, "stop_on_signals", recording_stop_on_signals)
+
+    async def fake_create_schema(connection_arg: object) -> None:
+        calls["schema_connection"] = connection_arg
+        order.append("create schema")
+
+    monkeypatch.setattr(cli, "create_schema", fake_create_schema)
+
+    async def fake_converge_once(
+        connection_arg: object,
+        *,
+        archive_dir: Path,
+        lake_dir: Path,
+        now: datetime,
+        first_day: date,
+        last_day: date,
+        concurrency: int,
+        retry_failed: bool,
+        base_url: str,
+    ) -> ArchiveCounters:
+        calls.update(
+            connection=connection_arg,
+            now=now,
+            first_day=first_day,
+            last_day=last_day,
+            concurrency=concurrency,
+            retry_failed=retry_failed,
+            base_url=base_url,
+        )
+        order.append("converge")
+        counters = ArchiveCounters()
+        counters.record_pass(due=48)
+        counters.record_hour(status=HourStatus.MISSING, events=None)
+        return counters
+
+    monkeypatch.setattr(cli, "converge_once", fake_converge_once)
+
+    result = runner.invoke(cli.app, ["backfill", "2026-07-21", "2026-07-22"])
+
+    assert result.exit_code == 0
+    assert calls["first_day"] == date(2026, 7, 21)  # inclusive both ends
+    assert calls["last_day"] == date(2026, 7, 22)
+    assert calls["base_url"] == MIRROR_BASE  # from settings, not the library constant
+    # True by default, and the whole reason an explicit range exists: the always-on
+    # loop skips failed hours so it cannot spin, so nothing else ever retries them.
+    assert calls["retry_failed"] is True
+    # ingest_hour rejects a naive clock outright, so a tz-less now here would fail
+    # only once a real hour was attempted — long after this command returned 0.
+    now = calls["now"]
+    assert isinstance(now, datetime) and now.tzinfo is not None
+    # The schema is created before the scan and on the same connection.
+    # converge_forever does this itself; converge_once does not, and a backfill is
+    # commonly the first thing ever pointed at a database — the scan would fail on
+    # a missing archive_hours table.
+    assert order == ["open connection", "create schema", "converge", "close connection"]
+    assert calls["schema_connection"] is connection
+    # No signal handlers, deliberately: converge_once has no stop event to give one
+    # to, so installing them would swallow Ctrl-C into an event nothing reads and
+    # leave a year-long range killable only by SIGKILL. This pins that decision,
+    # which a comment alone would leave as a suggestion.
+    assert installed_handlers == []
+    assert "done:" in result.output
+    assert "'missing': 1" in result.output
+
+
+def test_backfill_refuses_a_range_whose_days_are_transposed(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # The ledger scan builds its calendar with generate_series, which returns no
+    # rows for a descending range. So the natural failure mode is not an error but
+    # "nothing outstanding" and exit 0 — a typo that reads as a completed backfill,
+    # leaving every hour it skipped looking settled to later readers. Opening
+    # nothing is part of the claim: the refusal has to land before any connection.
+    order: list[str] = []
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection(order, object()))
+
+    async def unreachable_converge_once(*args: object, **kwargs: object) -> ArchiveCounters:
+        raise AssertionError("a transposed range must never reach the ledger scan")
+
+    monkeypatch.setattr(cli, "converge_once", unreachable_converge_once)
+
+    result = runner.invoke(cli.app, ["backfill", "2026-07-22", "2026-07-21"])
+
+    assert result.exit_code != 0
+    assert order == []  # refused on its arguments, before a socket was opened
+    assert "FIRST_DAY 2026-07-22 is after LAST_DAY 2026-07-21" in result.output

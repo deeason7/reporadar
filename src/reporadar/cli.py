@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import typer
@@ -13,13 +13,21 @@ from reporadar.analysis.capture import capture_rate, type_counts
 from reporadar.config import get_settings
 from reporadar.ingest.archive import download_hour
 from reporadar.ingest.consumer import consume_stream
+from reporadar.ingest.converge import (
+    DEFAULT_CONCURRENCY,
+    DEFAULT_LOOKBACK_DAYS,
+    DEFAULT_SCAN_INTERVAL_S,
+    converge_forever,
+    converge_once,
+)
 from reporadar.ingest.kafka import kafka_dead_letter_sink, kafka_sink, kafka_source
-from reporadar.ingest.metrics import ConsumeCounters, PollCounters
+from reporadar.ingest.ledger import create_schema
+from reporadar.ingest.metrics import ArchiveCounters, ConsumeCounters, PollCounters
 from reporadar.ingest.poller import collect_sample
 from reporadar.ingest.service import poll_stream
 from reporadar.ingest.signals import stop_on_signals
 from reporadar.ingest.sinks import HourlyNdjsonSink, TeeSink
-from reporadar.ingest.store import pg_store
+from reporadar.ingest.store import pg_connection, pg_store
 from reporadar.ingest.topics import provision_topics, require_topics
 
 app = typer.Typer(help="RepoRadar — ecosystem intelligence tooling", no_args_is_help=True)
@@ -140,6 +148,101 @@ def consume(seen_window: int | None = None, report_every: int = 60) -> None:
 
     counters = asyncio.run(_run())
     typer.echo(f"stopped: {counters.as_dict()}")
+
+
+@app.command(name="archive-serve")
+def archive_serve(
+    interval_s: float = DEFAULT_SCAN_INTERVAL_S,
+    concurrency: int = DEFAULT_CONCURRENCY,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+    passes: int | None = None,
+) -> None:
+    """Keep the lake converged on the published archive: scan for gaps, ingest, repeat."""
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    settings = get_settings()
+
+    async def _run() -> ArchiveCounters:
+        # Signals outermost, as in serve and consume: a SIGTERM arriving while the
+        # connection is still being established should end the run rather than be
+        # missed because the handler was not installed yet.
+        with stop_on_signals() as stop:
+            async with pg_connection(settings) as connection:
+                return await converge_forever(
+                    connection,
+                    archive_dir=settings.archive_dir,
+                    lake_dir=settings.lake_dir,
+                    concurrency=concurrency,
+                    lookback_days=lookback_days,
+                    interval_s=interval_s,
+                    # The configured publisher, not the library default: an
+                    # unreachable host in a test or a mirror in a deployment is a
+                    # setting, and fetch-archive already honours the same one.
+                    base_url=settings.archive_base,
+                    max_passes=passes,
+                    stop=stop,
+                )
+
+    counters = asyncio.run(_run())
+    typer.echo(f"stopped: {counters.as_dict()}")
+
+
+@app.command()
+def backfill(
+    first_day: str,
+    last_day: str,
+    concurrency: int = DEFAULT_CONCURRENCY,
+    retry_failed: bool = True,
+) -> None:
+    """Ingest one explicit range of archive hours (DAYs = YYYY-MM-DD, both inclusive)."""
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    settings = get_settings()
+    first = date.fromisoformat(first_day)
+    last = date.fromisoformat(last_day)
+    if first > last:
+        # Refused rather than passed through. The ledger scan builds its calendar
+        # with generate_series, which yields no rows for a descending range — so a
+        # transposed pair of dates would report "nothing outstanding" and exit 0.
+        # A typo that reads as a completed backfill is the worst available outcome,
+        # because the hours it silently skipped look settled to every later reader.
+        raise typer.BadParameter(f"FIRST_DAY {first} is after LAST_DAY {last}")
+
+    async def _run() -> ArchiveCounters:
+        # Deliberately no stop_on_signals here. converge_once takes no stop event,
+        # so installing handlers would route Ctrl-C into an event nothing reads and
+        # leave a long range killable only by SIGKILL. Keeping the default
+        # disposition means KeyboardInterrupt is the interruption — and an
+        # interrupted range loses nothing, since every hour already recorded stays
+        # recorded and a re-run resumes from the ledger rather than the start.
+        async with pg_connection(settings) as connection:
+            # converge_forever ensures the schema; converge_once does not, and a
+            # backfill is often the first thing ever run against a database — the
+            # scan would otherwise fail on a table that does not exist yet.
+            await create_schema(connection)
+            return await converge_once(
+                connection,
+                archive_dir=settings.archive_dir,
+                lake_dir=settings.lake_dir,
+                # One instant for the whole pass, so every hour in this range is
+                # judged closed-or-not and past-grace-or-not against the same
+                # clock. Reading the clock per hour would let a long pass decide
+                # two identical hours differently.
+                now=datetime.now(UTC),
+                first_day=first,
+                last_day=last,
+                concurrency=concurrency,
+                # The default that distinguishes this caller: an explicit range is
+                # how a fix reaches the hours it fixed, and those are exactly the
+                # ones the always-on loop skips so it cannot spin.
+                retry_failed=retry_failed,
+                base_url=settings.archive_base,
+            )
+
+    counters = asyncio.run(_run())
+    typer.echo(f"done: {counters.as_dict()}")
 
 
 @app.command()

@@ -1,8 +1,14 @@
-"""Validated store — consumed events into TimescaleDB.
+"""Validated store — consumed events into TimescaleDB — and the database's front door.
 
 ``consume_stream`` hands each batch of validated, deduped envelopes to a
 ``ValidatedStore``; this is the durable one. TimescaleDB is Postgres on the
 wire, so a Postgres driver is the only client it needs.
+
+This module also owns *how this project opens its database*: ``pg_store`` for a
+caller that writes batches, ``pg_connection`` for one that holds a connection
+across a run. Both live here so the DSN check and its message exist once — two
+entry points with two different phrasings for the same missing setting is a
+support question waiting to happen.
 
 Idempotency is the load-bearing part. Delivery is at-least-once and the
 consumer's dedup window only catches redeliveries that arrive inside it — a
@@ -35,9 +41,10 @@ from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Protocol
 
-from asyncpg import create_pool
+from asyncpg import connect, create_pool
 
 from reporadar.config import Settings
+from reporadar.ingest.ledger import Connection as LedgerConnection
 from reporadar.ingest.wire import WireEnvelope
 
 logger = logging.getLogger(__name__)
@@ -132,6 +139,49 @@ async def create_schema(connection: Connection) -> None:
     logger.info("events hypertable ready")
 
 
+def _require_dsn(settings: Settings) -> str:
+    """The configured DSN, or a failure naming the variable to set.
+
+    Pure config, so it is checked before anything opens a socket: a misconfigured
+    run should fail on its settings rather than on a connection attempt that
+    reports a default host nobody chose.
+    """
+    if settings.postgres_dsn is None:
+        raise RuntimeError("no database configured: set REPORADAR_POSTGRES_DSN (see .env.example)")
+    return str(settings.postgres_dsn)
+
+
+@asynccontextmanager
+async def pg_connection(settings: Settings) -> AsyncIterator[LedgerConnection]:
+    """One connection, opened for the life of a run and closed on the way out.
+
+    A connection rather than a pool, and deliberately not ``pg_store``'s shape.
+    ``pg_store`` yields a *store*: each call writes a batch and returns, so any
+    free pooled connection will do. The archive ingest is the opposite — it holds
+    one connection for a run that may last days and shares it across concurrent
+    hours — so a pool here would be machinery wrapped around a single acquisition
+    held forever, which is a pool with its one useful property disabled.
+
+    **Nothing here reconnects, and that is a decision rather than an omission.** A
+    dropped connection ends the run loudly; the supervisor restarts it; the next
+    scan re-derives what is outstanding from the ledger. Because the ingest loop
+    is level-triggered, a restart costs one interval and loses no work, so a
+    reconnecting pool would re-solve — less well, and with more moving parts — a
+    problem the convergence design has already solved.
+
+    Typed as the *ledger's* connection protocol because that is what the caller
+    needs: the narrowest surface, not the driver's whole API.
+    """
+    connection = await connect(_require_dsn(settings))
+    try:
+        yield connection
+    finally:
+        # Closed whether the run ended or crashed. A long-lived ingest service
+        # that dies without this leaves a backend session pinned server-side,
+        # and those accumulate across restarts until connections run out.
+        await connection.close()
+
+
 @asynccontextmanager
 async def pg_store(settings: Settings) -> AsyncIterator[PostgresStore]:
     """A ready :class:`PostgresStore`: pool opened on entry, closed on exit.
@@ -140,9 +190,7 @@ async def pg_store(settings: Settings) -> AsyncIterator[PostgresStore]:
     The pool closes whether the run ends or crashes — a dying consumer returns
     its connections instead of leaking them.
     """
-    if settings.postgres_dsn is None:
-        raise RuntimeError("no database configured: set REPORADAR_POSTGRES_DSN (see .env.example)")
-    pool = await create_pool(str(settings.postgres_dsn))
+    pool = await create_pool(_require_dsn(settings))
     try:
         async with pool.acquire() as connection:
             await create_schema(connection)

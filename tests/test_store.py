@@ -11,7 +11,7 @@ import pytest
 from reporadar.config import Settings
 from reporadar.github.events import RawEvent
 from reporadar.ingest import store
-from reporadar.ingest.store import PostgresStore, create_schema, pg_store, row_of
+from reporadar.ingest.store import PostgresStore, create_schema, pg_connection, pg_store, row_of
 from reporadar.ingest.wire import SCHEMA_VERSION, WireEnvelope
 
 CAPTURED_AT = datetime(2026, 7, 16, 15, 30, tzinfo=UTC)
@@ -59,6 +59,30 @@ class FakePool:
     async def acquire(self) -> AsyncIterator[FakeConnection]:
         self.acquisitions += 1
         yield self.connection
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeRawConnection:
+    """asyncpg-shaped connection double for the ledger's surface (execute + fetch).
+
+    Separate from FakeConnection because it doubles a different protocol: this is
+    what pg_connection hands out, and it records its own close so a leak is
+    visible. Widening the other double instead would have it standing in for two
+    surfaces at once, which is how a double stops describing anything.
+    """
+
+    def __init__(self) -> None:
+        self.executed: list[str] = []
+        self.closed = False
+
+    async def execute(self, query: str, *args: object) -> object:
+        self.executed.append(query)
+        return None
+
+    async def fetch(self, query: str, *args: object) -> Sequence[Sequence[object]]:
+        return []
 
     async def close(self) -> None:
         self.closed = True
@@ -207,3 +231,61 @@ async def test_factory_closes_the_pool_when_the_run_crashes(
             raise RuntimeError("consumer crashed mid-run")
 
     assert pool.closed  # no connection leaks behind a crash
+
+
+async def test_connection_factory_serves_the_configured_dsn_and_closes_on_exit(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    connection = FakeRawConnection()
+    dsns: list[str] = []
+
+    async def fake_connect(dsn: str) -> FakeRawConnection:
+        dsns.append(dsn)
+        return connection
+
+    monkeypatch.setattr(store, "connect", fake_connect)
+
+    async with pg_connection(settings) as served:
+        assert dsns == [str(settings.postgres_dsn)]  # the configured DSN, threaded through
+        assert served is connection
+        assert not connection.closed
+        # No DDL: this is a connection provider, not a schema owner. The archive
+        # ledger creates its own table and an archive run has no business creating
+        # the events hypertable — so the two schemas stay with the code that reads
+        # them rather than with whatever opened the socket.
+        assert connection.executed == []
+
+    assert connection.closed  # the session is released rather than pinned server-side
+
+
+async def test_connection_factory_refuses_to_run_without_a_configured_database(
+    settings: Settings,
+) -> None:
+    # Same contract as pg_store's, and asserted separately on purpose: both entry
+    # points share one check, and a refactor that gave either its own copy would
+    # leave this green while the messages drifted apart.
+    unconfigured = settings.model_copy(update={"postgres_dsn": None})
+
+    with pytest.raises(RuntimeError, match="REPORADAR_POSTGRES_DSN"):
+        async with pg_connection(unconfigured):
+            raise AssertionError("a connection must never be served without a database")
+
+
+async def test_connection_factory_closes_the_connection_when_the_run_crashes(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    # The archive loop runs for days, so its crash path is the one that actually
+    # gets exercised in production — an unclosed session per restart accumulates
+    # until the server refuses new ones.
+    connection = FakeRawConnection()
+
+    async def fake_connect(dsn: str) -> FakeRawConnection:
+        return connection
+
+    monkeypatch.setattr(store, "connect", fake_connect)
+
+    with pytest.raises(RuntimeError):
+        async with pg_connection(settings):
+            raise RuntimeError("ingest crashed mid-run")
+
+    assert connection.closed
