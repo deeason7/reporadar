@@ -128,6 +128,23 @@ All notable changes to this project are documented here, per
   after a failure. Neither reconnects, deliberately: a dropped connection ends the run, and
   because the next one re-derives what is outstanding from the record rather than resuming a
   plan, a restart costs one interval and loses no work.
+- The long-running commands now ship as a container image, and the local stack can run them:
+  `docker compose --profile app up -d` starts topic provisioning, live capture, the stream
+  consumer and the archive ingest alongside the infrastructure. All four are the same image and
+  differ only in the command they are given, so no deployment can put a different build behind one
+  process than another. They sit behind a profile deliberately, which keeps the plain `up` an
+  infrastructure-only command — starting the stack to run the tests should not begin polling
+  GitHub. The image installs from the lockfile and never resolves, so it carries the versions the
+  test suite ran against; it leaves the build tools, the test suite and the package manager out of
+  the runtime layer; and it runs as an unprivileged user that can write only its data directory.
+  Python output is unbuffered in the image, because container output is a pipe and a service whose
+  progress logs are block-buffered goes silent exactly when someone needs to read them.
+  Configuration comes from the same environment file, with the broker address and the database
+  connection string overridden to their in-network equivalents for these services only — the file
+  holds what a developer needs from the host, and inside a container `localhost` is the container.
+  Continuous integration now builds the image **and runs it**: the first version of it built,
+  exported and tagged without a warning, then failed on startup, because the project had been
+  installed as a link to a source directory the runtime layer deliberately does not carry.
 
 ### Fixed
 - The poller now honours the cadence the API asks for. Every /events response states a minimum

@@ -64,6 +64,8 @@ reporadar explore data/raw/gharchive/2026-07-07-15.json.gz   # event-type histog
 reporadar poll --cycles 10 --interval-s 10                   # sample the live /events feed
 reporadar serve                                              # always-on capture → files + stream
 reporadar consume                                            # stream → validated store
+reporadar archive-serve                                      # keep the columnar store converged
+reporadar backfill 2026-07-21 2026-07-22                     # ingest one explicit range of days
 reporadar provision                                          # create the Kafka topics
 reporadar capture-rate <archive.json.gz> <live.ndjson>       # completeness KPI
 ```
@@ -81,6 +83,12 @@ and it never alters a topic that already exists — if one is sized differently 
 leaves it alone. `provision --check` reports without creating and exits non-zero when the
 broker is not ready, which makes it usable as a deploy gate. The reading commands verify the
 topics before they start, so a fresh broker fails immediately and says what to run.
+`archive-serve` keeps the columnar store converged on the published archive: it asks the hours
+record what is outstanding, converts those hours a few at a time, and repeats on an interval.
+There is no schedule and so no missed run — downtime, a partial failure and an hour published
+late all resolve on the next pass. `backfill` runs the same pass once over an explicit range of
+days and stops; unlike the service it also retries hours previously found unreadable, which is
+how a fix reaches the hours it fixes. Both need `REPORADAR_POSTGRES_DSN` and no broker at all.
 `capture-rate` is only meaningful when the live sample's window overlaps the archive hour.
 
 ## Local stack
@@ -94,6 +102,33 @@ make provision            # create the topics (once per broker; safe to repeat)
 make logs                 # follow logs
 make down                 # stop it
 ```
+
+`make up` starts the infrastructure only, so running it never begins polling GitHub.
+
+## Running the services in containers
+
+The four long-running commands ship as one image — they differ only by the command they are
+given, so no deployment can put a different build behind one process than another. They sit
+behind a compose profile, which is what keeps `make up` an infrastructure-only command:
+
+```bash
+make up-app               # infrastructure + provision + serve, consume, archive-serve
+make logs-app             # follow the application logs
+make down-app             # stop everything
+```
+
+Configuration comes from the same `.env`, with one wrinkle worth knowing: `.env` holds the
+addresses a developer needs **from the host** (`localhost` and shifted ports), and inside the
+network `localhost` is the container. The compose file therefore overrides the broker address
+and the database DSN with their in-network equivalents (`kafka:19092`, `timescaledb:5432`) for
+the application services only. Scan bounds are passed on the command line and can be overridden
+from `.env` — see `ARCHIVE_SCAN_INTERVAL_S`, `ARCHIVE_CONCURRENCY`, `ARCHIVE_LOOKBACK_DAYS`,
+`SERVE_INTERVAL_S` and `SERVE_PAGES` in `.env.example`.
+
+Everything writes into one named volume mounted at `/app/data`, the image runs as an
+unprivileged user, and the services restart unless explicitly stopped. A restart costs nothing:
+the archive ingest re-derives what is outstanding from the hours record rather than resuming a
+plan, so it converges again from wherever it was interrupted.
 
 ## Compliance
 

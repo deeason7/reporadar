@@ -1,0 +1,28 @@
+# The build context is uploaded to the daemon before anything runs, so this file
+# is both a speed and a safety measure: data/ is tens of megabytes of archive
+# hours, and .env is a secret that must never reach an image layer.
+
+.git
+.github
+.venv
+data
+.env
+
+# Caches and build droppings — never useful in an image, and .pyc files built
+# against a different interpreter are worse than useless.
+__pycache__/
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+dist
+build
+
+# Tests and dev config are deliberately absent from the runtime image: the suite
+# gates the commit, and shipping it would ship its dev dependencies too.
+tests
+.pre-commit-config.yaml
+Makefile
+docker-compose.yml
+Dockerfile

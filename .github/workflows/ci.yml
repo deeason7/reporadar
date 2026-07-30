@@ -39,4 +39,29 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-validate
           GRAFANA_ADMIN_PASSWORD: ci-validate
-        run: docker compose config -q
+        # Both ways round: the default set is the infrastructure a developer
+        # starts, and the app profile is what a deploy runs. Only checking the
+        # default set would leave every application service unvalidated.
+        run: |
+          docker compose config -q
+          docker compose --profile app config -q
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the runtime image
+        run: docker build -t reporadar:ci .
+
+      - name: Run it
+        # Building is not the check. The first version of this image built,
+        # exported and tagged without a single warning, and then died on
+        # `ModuleNotFoundError` the first time its entrypoint ran, because the
+        # project was installed editable and the runtime stage carries only the
+        # virtualenv. A build-only job would have shipped that.
+        run: |
+          docker run --rm reporadar:ci --help | grep -q archive-serve
+          uid="$(docker run --rm --entrypoint id reporadar:ci -u)"
+          test "$uid" != "0" || { echo "the image runs as root"; exit 1; }
+          echo "entrypoint works; runs as uid $uid"

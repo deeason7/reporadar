@@ -1,4 +1,4 @@
-.PHONY: setup lint fmt test up down logs provision
+.PHONY: setup lint fmt test up down logs provision up-app down-app logs-app image
 
 # One-time dev setup: environment + hooks
 setup:
@@ -30,3 +30,19 @@ down:
 
 logs:
 	docker compose logs -f
+
+# The same stack plus the application services. Separate targets rather than a
+# flag on the ones above, so that `make up` cannot start polling GitHub by
+# accident — the profile is the mechanism, these are just the two names for it.
+up-app:
+	docker compose --profile app up -d --build
+
+down-app:
+	docker compose --profile app down
+
+logs-app:
+	docker compose --profile app logs -f serve consume archive-serve
+
+# Build the runtime image alone, the way CI does.
+image:
+	docker build -t reporadar:dev .

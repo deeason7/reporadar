@@ -65,7 +65,107 @@ services:
       timescaledb:
         condition: service_healthy
 
+  # ---------------------------------------------------------------------------
+  # Application services. All four run the same image and pick a role with a
+  # command, so no deploy can put a different build behind one process than
+  # another.
+  #
+  # They sit behind the `app` profile, which means `docker compose up -d` still
+  # brings up only the infrastructure — the local workflow is unchanged, and a
+  # developer running it does not silently start polling GitHub. The full stack
+  # is `docker compose --profile app up -d`, which is also the deploy command.
+  #
+  # Two things about configuration, both of which follow from where the values
+  # come from. `env_file` supplies the token and shared settings, and is marked
+  # optional so `docker compose config` still resolves on a fresh clone that has
+  # no .env yet (CI does exactly that). The `environment` block then overrides
+  # the two addresses that differ inside this network: .env holds what a
+  # developer needs from the host — localhost and a shifted port — and inside a
+  # container localhost is the container. Compose gives `environment` precedence
+  # over `env_file`, which is what makes the override work rather than conflict.
+  # ---------------------------------------------------------------------------
+
+  # One-shot, and everything that reads or writes the stream waits for it to
+  # succeed. Topics are created deliberately (auto-create is off on the broker),
+  # so without this the readers fail their own preflight on a fresh volume.
+  provision:
+    build: .
+    profiles: ["app"]
+    command: ["provision"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REPORADAR_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+
+  serve:
+    build: .
+    profiles: ["app"]
+    command: ["serve", "--interval-s", "${SERVE_INTERVAL_S:-10}", "--pages", "${SERVE_PAGES:-3}"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REPORADAR_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  consume:
+    build: .
+    profiles: ["app"]
+    command: ["consume"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REPORADAR_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      REPORADAR_POSTGRES_DSN: postgresql://${POSTGRES_USER:-reporadar}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@timescaledb:5432/${POSTGRES_DB:-reporadar}
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+      timescaledb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Touches no broker at all — it reads the published archive and writes the
+  # columnar store and the hours ledger — so it waits only on the database.
+  archive-serve:
+    build: .
+    profiles: ["app"]
+    command:
+      [
+        "archive-serve",
+        "--interval-s",
+        "${ARCHIVE_SCAN_INTERVAL_S:-900}",
+        "--concurrency",
+        "${ARCHIVE_CONCURRENCY:-3}",
+        "--lookback-days",
+        "${ARCHIVE_LOOKBACK_DAYS:-3}",
+      ]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REPORADAR_POSTGRES_DSN: postgresql://${POSTGRES_USER:-reporadar}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@timescaledb:5432/${POSTGRES_DB:-reporadar}
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   kafka_data:
   timescale_data:
   grafana_data:
+  app_data:
