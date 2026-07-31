@@ -46,6 +46,76 @@ jobs:
           docker compose config -q
           docker compose --profile app config -q
 
+      - name: Check what the compose file actually says
+        env:
+          POSTGRES_PASSWORD: ci-validate
+          GRAFANA_ADMIN_PASSWORD: ci-validate
+        # `config -q` proves the file parses and every variable resolves. It
+        # proves nothing about what the file *says*, and three of the things it
+        # says matter: a published port that binds every interface is reachable
+        # from the network the machine is on, and none of these services
+        # authenticates anyone; infrastructure without a restart policy leaves
+        # the application restarting into dependencies that never come back; and
+        # an unbounded log driver fills the same disk the data is written to.
+        #
+        # This reads the RESOLVED config, not the file. Variable interpolation
+        # is exactly where a port binding can change without the text changing,
+        # so reading the source would check the wrong artifact.
+        run: |
+          python3 - <<'EOF'
+          import json, subprocess, sys
+
+          cfg = json.loads(subprocess.run(
+              ["docker", "compose", "--profile", "app", "config", "--format", "json"],
+              check=True, capture_output=True, text=True).stdout)
+
+          problems = []
+          for name, svc in sorted(cfg["services"].items()):
+              for p in svc.get("ports", []):
+                  host_ip = p.get("host_ip", "")
+                  if host_ip not in ("127.0.0.1", "::1"):
+                      problems.append(
+                          f"{name}: publishes {p.get('published')} on {host_ip or '0.0.0.0'} "
+                          f"— reachable from the network, and nothing here authenticates")
+              if "restart" not in svc:
+                  problems.append(f"{name}: no restart policy")
+              if svc.get("logging", {}).get("driver") != "json-file":
+                  problems.append(f"{name}: no json-file logging driver")
+              elif not svc["logging"].get("options", {}).get("max-size"):
+                  problems.append(f"{name}: logging is unbounded (no max-size)")
+
+          print(f"checked {len(cfg['services'])} services")
+          if problems:
+              print("\n".join("  FAIL " + p for p in problems))
+              sys.exit(1)
+          print("  all services: loopback-only publishes, a restart policy, bounded logs")
+          EOF
+
+      - name: Negative control — the check must be able to fail
+        env:
+          POSTGRES_PASSWORD: ci-validate
+          GRAFANA_ADMIN_PASSWORD: ci-validate
+        # A check that has never been watched failing is not known to work. This
+        # republishes Kafka on every interface in an overlay and requires the
+        # check above to reject it. If this step passes, the real one is blind.
+        run: |
+          cat > /tmp/expose.yml <<'EOF'
+          services:
+            kafka:
+              ports: !override ["0.0.0.0:9092:9092"]
+          EOF
+          out="$(docker compose -f docker-compose.yml -f /tmp/expose.yml --profile app config --format json)"
+          if echo "$out" | python3 -c "
+          import json,sys
+          cfg = json.load(sys.stdin)
+          bad = [p for p in cfg['services']['kafka'].get('ports', [])
+                 if p.get('host_ip','') not in ('127.0.0.1','::1')]
+          sys.exit(0 if bad else 1)"; then
+            echo "negative control fired: an all-interfaces publish is visible to the check"
+          else
+            echo "NEGATIVE CONTROL FAILED — the check cannot see an exposed port"; exit 1
+          fi
+
   image:
     runs-on: ubuntu-latest
     steps:

@@ -162,6 +162,16 @@ All notable changes to this project are documented here, per
   the situation it exists to detect.
 
 ### Changed
+- The local stack no longer publishes its ports to every network interface. Kafka, TimescaleDB and
+  Grafana bind to `127.0.0.1`, so they are reachable from the machine running them and from nowhere
+  else. None of the three authenticates a client — the broker's listeners are `PLAINTEXT` — so on any
+  shared network the previous binding was an open broker and an open database. The ports themselves
+  stay, because the commands are meant to be run from the host and need them. Alongside it, the three
+  infrastructure services gained the restart policy the application services already had, so a reboot
+  no longer leaves the application restarting into dependencies that never return, and every service
+  now caps its own logs rather than growing without bound on the disk holding the data. Continuous
+  integration checks all three properties against the resolved configuration, and a negative control
+  proves the check can fail.
 - The documented ingestion design no longer describes the hourly archive as a complete record to
   reconcile the live feed against. That framing was written before the two sources were compared,
   and comparing them did not support it: in the hours sampled they did not share events, and

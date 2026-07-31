@@ -134,6 +134,14 @@ make down                 # stop it
 
 `make up` starts the infrastructure only, so running it never begins polling GitHub.
 
+Every published port binds to `127.0.0.1`, so the stack is reachable from this machine and from
+nowhere else. That matters more than it looks: none of these services authenticates a client — the
+broker's listeners are `PLAINTEXT` — so a port bound to every interface is an open broker and an open
+database to whatever network the machine is on. The commands are meant to be run from the host, so
+the ports exist; they just do not need to leave it. Each service also restarts unless explicitly
+stopped, and caps its own logs, so neither a reboot nor a long run leaves the stack in a state you
+have to clean up by hand.
+
 ## Running the services in containers
 
 The four long-running commands ship as one image — they differ only by the command they are

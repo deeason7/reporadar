@@ -2,12 +2,33 @@
 # the standard ports so this stack coexists with other local projects).
 #
 # Kafka runs single-node KRaft — replication factor 1 is a dev-only setting.
+#
+# Every published port binds to 127.0.0.1 rather than to every interface. The
+# commands are meant to be run from this machine — `provision` and `consume`
+# reach the broker and the database over these ports — so the ports have to
+# exist; what they do not have to be is reachable from the rest of whatever
+# network this machine is on. None of these services authenticates a client:
+# the broker's listeners are PLAINTEXT. On a home network that is untidy; on a
+# university or café network it is an open broker and an open database.
+# (A container listening on 0.0.0.0 *inside* its own network namespace is not
+# an exposure. The published port is the thing that crosses the boundary, so
+# that is the thing pinned to loopback.)
+
+# One logging policy, in one place. Without this the default json-file driver
+# grows without bound on the same disk the lake is written to.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
   kafka:
     image: apache/kafka:3.9.1
+    restart: unless-stopped
+    logging: *default-logging
     ports:
-      - "${KAFKA_PORT:-9092}:9092"
+      - "127.0.0.1:${KAFKA_PORT:-9092}:9092"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -37,8 +58,10 @@ services:
 
   timescaledb:
     image: timescale/timescaledb:2.17.2-pg16
+    restart: unless-stopped
+    logging: *default-logging
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-reporadar}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -53,8 +76,10 @@ services:
 
   grafana:
     image: grafana/grafana-oss:11.6.1
+    restart: unless-stopped
+    logging: *default-logging
     ports:
-      - "${GRAFANA_PORT:-3001}:3000"
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
@@ -101,6 +126,7 @@ services:
       kafka:
         condition: service_healthy
     restart: "no"
+    logging: *default-logging
 
   serve:
     build: .
@@ -117,6 +143,7 @@ services:
       provision:
         condition: service_completed_successfully
     restart: unless-stopped
+    logging: *default-logging
 
   consume:
     build: .
@@ -136,6 +163,7 @@ services:
       timescaledb:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
 
   # Touches no broker at all — it reads the published archive and writes the
   # columnar store and the hours ledger — so it waits only on the database.
@@ -163,6 +191,7 @@ services:
       timescaledb:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
 
 volumes:
   kafka_data:
