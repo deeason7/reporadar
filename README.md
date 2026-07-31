@@ -14,11 +14,25 @@ The core is deliberately boring and statistical: pipelines, reconciliation, base
 calibration. A local-LLM layer will eventually write weekly ecosystem briefs — with a plain
 template fallback, so no model is ever a point of failure.
 
-> **Status:** early development. In place today: ingestion foundations (a live `/events`
-> poller with bounded deduplication and run counters, an always-on capture service writing
-> hourly NDJSON files, idempotent GH Archive hour downloads), DuckDB archive analysis and
-> feed-coverage estimation behind the `reporadar` CLI, and a local compose stack (Kafka,
-> TimescaleDB, Grafana). The changelog tracks what is actually in place.
+> **Status:** early development, and ingestion is the half that exists. In place today: a live
+> `/events` poller with bounded deduplication, run counters, and respect for the cadence the API
+> itself asks for; an always-on capture service writing hourly NDJSON and publishing to Kafka; a
+> validating consumer that stores events in TimescaleDB and dead-letters whatever will not decode;
+> idempotent GH Archive hour downloads converted into a partitioned Parquet lake with an hours
+> ledger, kept converged by a level-triggered loop that reclaims each hour's compressed source once
+> the record of it is written; `verify` to check the store against that ledger in both directions;
+> idempotent topic provisioning; and all four long-running commands shipped as one image behind a
+> compose profile.
+>
+> **Feed coverage has been measured on a real run rather than inferred from the design: 2.08%** for
+> a single poller at three pages per 60-second cycle, over one 30-minute window on 2026-07-31. That
+> is one configuration on one day and has not been repeated. It appears here because the rule is
+> that a measured number is published with its conditions attached — not because it is a settled
+> figure, and not as a claim about what this system captures in general.
+>
+> Not built yet: the analytics marts, the models, the dashboards. Nothing is deployed anywhere and
+> nothing is intended to be — this runs locally, and reproducing it from this README is the point.
+> The changelog tracks what is actually in place.
 
 ## The honest-ingestion design
 

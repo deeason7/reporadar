@@ -12,3 +12,8 @@ for security reports. You'll get an acknowledgment within a few days.
 - **Data:** public GitHub event data only; no PII is collected beyond what GitHub already
   publishes, and published analyses aggregate person-level signals to repo/ecosystem level.
 - **Dependencies:** version-bounded in `pyproject.toml` with a committed `uv.lock`.
+- **Local stack:** every published port binds to `127.0.0.1`. None of the services the stack runs
+  authenticates a client — the broker's listeners are `PLAINTEXT` and the database holds whatever
+  password the environment file sets — so they are reachable from the machine running them and from
+  nowhere else. Continuous integration asserts this against the resolved compose configuration
+  rather than the file text, and a control step proves that check can fail.
