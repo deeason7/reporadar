@@ -174,11 +174,25 @@ def test_the_table_refuses_a_counted_success_with_no_count_in_sql_too() -> None:
 # Opt-in, because CI has no server. A double proves the module calls what it means
 # to; only a real server proves the SQL parses, the CHECK constraints bite, and the
 # conditional upsert behaves as written.
+#
+# This test DROPS the ledger table, so it reads its own variable rather than the
+# one the application runs on. The precondition is not "a database is configured"
+# but "a database I am allowed to destroy", and only the second one can be stated
+# by a name. Gating on REPORADAR_POSTGRES_DSN made every developer with a working
+# .env one `set -a; source .env` away from losing the ledger — and losing it is
+# expensive, because the lake files survive while the only record that they are
+# done does not.
+#
+# Deliberately absent from .env.example: documenting it there is what would put it
+# in .env, and anything in .env is one `set -a` from being exported, which is the
+# exact hazard this replaces.
 
-DSN = os.environ.get("REPORADAR_POSTGRES_DSN")
+DSN = os.environ.get("REPORADAR_TEST_POSTGRES_DSN")
 
 
-@pytest.mark.skipif(not DSN, reason="needs REPORADAR_POSTGRES_DSN")
+@pytest.mark.skipif(
+    not DSN, reason="needs REPORADAR_TEST_POSTGRES_DSN — a database this test may drop tables in"
+)
 async def test_the_ledger_round_trips_against_a_real_database() -> None:
     import asyncpg
 
