@@ -1,0 +1,93 @@
+version: 2
+
+models:
+  - name: stg_events
+    description: >
+      Published events with the envelope's nested objects lifted into typed
+      columns, one row per event id.
+    columns:
+      - name: event_id
+        description: The publisher's event identifier — globally unique.
+        data_tests:
+          - unique
+          - not_null
+
+      # The columns below are extracted out of JSON, so a null test here is not
+      # box-ticking: it is the alarm for the envelope changing shape. If a key is
+      # renamed the extraction returns null rather than failing, and every
+      # downstream count keeps working while grouping everything into one null
+      # bucket.
+      - name: actor_id
+        description: Numeric id of the account that produced the event.
+        data_tests:
+          # Hard failure, and the measurement earns it: zero nulls in 5,090,496
+          # events. Any null here is new behaviour, not a rare case.
+          - not_null
+
+      # repo_id and repo_name are thresholded rather than absolute, because a
+      # plain not_null conflates two failures that deserve different answers.
+      # Measured over 5,090,496 events: 3 rows carry an empty `repo` object — all
+      # three ForkEvents, and only one of them is also flagged non-public, so the
+      # obvious "the repository went private" reading explains one case and not
+      # the pattern. The cause is not established and is not claimed here.
+      #
+      # At roughly 0.6 per million, a normal day of this feed is expected to carry
+      # about two. Warning on any occurrence keeps it visible; failing above 100
+      # (~40x the expected daily count, and orders of magnitude below what a broken
+      # extraction produces) is the line between "the publisher did something rare"
+      # and "we stopped reading the envelope correctly".
+      - name: repo_id
+        description: Numeric id of the repository the event belongs to.
+        data_tests:
+          - not_null:
+              config:
+                severity: error
+                warn_if: ">0"
+                error_if: ">100"
+      - name: repo_name
+        description: Repository in `owner/name` form, as carried by the event.
+        data_tests:
+          - not_null:
+              config:
+                severity: error
+                warn_if: ">0"
+                error_if: ">100"
+      - name: event_type
+        description: The published event type.
+        data_tests:
+          - not_null
+          # A type outside this list is news, not a fault: the publisher adds them
+          # and we would want to know. Warning severity says so — a red build here
+          # would mean an upstream product decision breaks our pipeline, which is
+          # the wrong relationship to have with a source we do not control.
+          - accepted_values:
+              config:
+                severity: warn
+              arguments:
+                values:
+                  - PushEvent
+                  - CreateEvent
+                  - DeleteEvent
+                  - PullRequestEvent
+                  - IssueCommentEvent
+                  - IssuesEvent
+                  - PullRequestReviewEvent
+                  - PullRequestReviewCommentEvent
+                  - WatchEvent
+                  - ReleaseEvent
+                  - ForkEvent
+                  - MemberEvent
+                  - CommitCommentEvent
+                  - GollumEvent
+                  - PublicEvent
+                  - DiscussionEvent
+                  - DiscussionCommentEvent
+
+      - name: created_at
+        description: When the event happened, per the publisher.
+        data_tests:
+          - not_null
+      - name: archive_day
+        description: Partition the event was filed under; equals its event date.
+        data_tests:
+          - not_null

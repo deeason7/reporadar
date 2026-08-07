@@ -1,0 +1,20 @@
+# How the transformation layer connects. Committed deliberately: it contains no
+# credentials, only the names of the variables that carry them, so a reader can
+# reproduce the setup without being handed a secret.
+#
+# The query engine runs in memory and reads the Parquet lake directly. It also
+# attaches the Postgres database, which is where the marts are written and where
+# the hours ledger already lives — so a model can join what landed against the
+# record of what was supposed to land, in one query, without a second tool.
+reporadar:
+  target: local
+  outputs:
+    local:
+      type: duckdb
+      path: ":memory:"
+      extensions:
+        - postgres
+      attach:
+        - path: "{{ env_var('REPORADAR_POSTGRES_DSN') }}"
+          alias: pg
+          type: postgres

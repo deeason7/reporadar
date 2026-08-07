@@ -24,5 +24,11 @@ data/
 .idea/
 .vscode/
 
+# Transformation build artifacts (compiled SQL, run results, package installs)
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+dbt/.user.yml
+
 # Logs
 *.log

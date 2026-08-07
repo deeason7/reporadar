@@ -116,6 +116,117 @@ jobs:
             echo "NEGATIVE CONTROL FAILED — the check cannot see an exposed port"; exit 1
           fi
 
+  marts:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: timescale/timescaledb:2.17.2-pg16
+        env:
+          POSTGRES_USER: reporadar
+          POSTGRES_PASSWORD: ci-validate
+          POSTGRES_DB: reporadar
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 10
+    env:
+      REPORADAR_POSTGRES_DSN: postgresql://reporadar:ci-validate@localhost:5432/reporadar
+      REPORADAR_DATA_DIR: /tmp/lake-fixture
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install with the transformation tools
+        run: uv sync --extra dev --extra dbt
+
+      # A lake to build from. CI has no archive, so the models get a small one
+      # with the shapes that matter: two days, several event types, and one event
+      # id appearing twice — because a deduplication nothing ever duplicates is
+      # not being tested.
+      #
+      # Never add `dbt debug` to this job: it prints the resolved profile,
+      # credentials included, and workflow logs on a public repository are public.
+      - name: Build a lake fixture
+        # `uv run`, not the system python: this needs duckdb, which lives in the
+        # project environment. The other heredoc steps in this file use only the
+        # standard library, so the pattern does not carry over.
+        run: |
+          uv run python - <<'EOF'
+          import duckdb
+          rows = []
+          for day, hour, n in (("2026-07-22", 21, 40), ("2026-07-22", 22, 30), ("2026-07-23", 3, 20)):
+              for i in range(n):
+                  kind = ("PushEvent", "WatchEvent", "ForkEvent", "IssuesEvent")[i % 4]
+                  rows.append((
+                      f"{day}-{hour}-{i}", kind,
+                      f'{{"id":{i % 7},"login":"actor{i % 7}"}}',
+                      f'{{"id":{i % 5},"name":"owner/repo{i % 5}"}}',
+                      "null", "{}", True, f"{day} {hour:02d}:{i % 60:02d}:00",
+                  ))
+          # The same event id twice, as a redelivered hour would produce.
+          rows.append(rows[0])
+          con = duckdb.connect()
+          con.execute("""
+              CREATE TABLE ev (id VARCHAR, type VARCHAR, actor JSON, repo JSON,
+                               org JSON, payload JSON, public BOOLEAN, created_at TIMESTAMP)
+          """)
+          con.executemany("INSERT INTO ev VALUES (?,?,?,?,?,?,?,?)", rows)
+          for day, hour in (("2026-07-22", 21), ("2026-07-22", 22), ("2026-07-23", 3)):
+              out = f"/tmp/lake-fixture/lake/dt={day}/hr={hour}"
+              __import__("os").makedirs(out, exist_ok=True)
+              con.execute(
+                  f"""COPY (SELECT * FROM ev
+                            WHERE cast(created_at AS DATE) = DATE '{day}'
+                              AND extract(hour FROM created_at) = {hour})
+                      TO '{out}/events.parquet' (FORMAT PARQUET)"""
+              )
+          print("fixture written")
+          EOF
+
+      - name: Build the marts and run their tests
+        run: uv run dbt build --project-dir dbt --profiles-dir dbt
+
+      # The models ran and the tests passed — but tests that cannot fail prove
+      # nothing about the data. This files an hour's events under the wrong hour,
+      # which is the one thing `repo_daily` relies on not happening: it groups on
+      # the partition rather than the timestamp, and those are only the same
+      # question while every file holds the hour it is named for.
+      - name: Negative control — the data tests must be able to fail
+        # The models ran and the tests passed, which proves nothing until the
+        # tests have been watched failing. This files events under an hour they
+        # do not belong to — the one thing `repo_daily` relies on not happening,
+        # since it groups on the partition rather than the timestamp.
+        #
+        # The ids are rewritten rather than the file simply copied, and that
+        # detail is the whole control. A plain copy produces rows that share an
+        # id with correctly-filed ones, the staging dedup keeps one row per id,
+        # and every misfiled row disappears before any test can see it — a
+        # negative control that quietly tests nothing. Measured while writing
+        # this: 40 misfiled rows in, 0 surviving.
+        run: |
+          uv run python - <<'EOF'
+          import os
+          import duckdb
+          out = "/tmp/lake-fixture/lake/dt=2026-07-22/hr=5"
+          os.makedirs(out, exist_ok=True)
+          duckdb.connect().execute(f"""
+              COPY (SELECT 'misfiled-' || id AS id, type, actor, repo, org,
+                           payload, public, created_at
+                    FROM read_parquet(
+                      '/tmp/lake-fixture/lake/dt=2026-07-22/hr=21/events.parquet'))
+              TO '{out}/events.parquet' (FORMAT PARQUET)
+          """)
+          EOF
+          if uv run dbt build --project-dir dbt --profiles-dir dbt \
+               --select stg_events assert_partition_matches_event_time; then
+            echo "NEGATIVE CONTROL FAILED — a misfiled hour passed the checks"; exit 1
+          else
+            echo "negative control fired: a misfiled hour is visible to the tests"
+          fi
+
   image:
     runs-on: ubuntu-latest
     steps:
@@ -135,3 +246,14 @@ jobs:
           uid="$(docker run --rm --entrypoint id reporadar:ci -u)"
           test "$uid" != "0" || { echo "the image runs as root"; exit 1; }
           echo "entrypoint works; runs as uid $uid"
+
+      - name: The transformation tools stay out of the runtime image
+        # They are an optional extra precisely so the services that poll, consume
+        # and ingest do not carry ~58 packages they never import. Nothing enforces
+        # that but the absence of a flag in the Dockerfile, which is one careless
+        # edit from changing.
+        run: |
+          if docker run --rm --entrypoint python reporadar:ci -c "import dbt" 2>/dev/null; then
+            echo "the runtime image carries the transformation tooling"; exit 1
+          fi
+          echo "runtime image carries no transformation tooling"

@@ -36,6 +36,17 @@ dependencies = [
 reporadar = "reporadar.cli:main"
 
 [project.optional-dependencies]
+# The transformation layer. Deliberately optional rather than a runtime
+# dependency: it pulls ~58 packages that the poller, the consumer and the
+# archive ingest have no use for, and the container image runs those three.
+# Installed by anyone building the marts (`uv sync --extra dbt`) and by CI.
+dbt = [
+    "dbt-core>=1.8,<2.0",
+    # DuckDB rather than Postgres as the adapter: the models read the Parquet
+    # lake, which is where the events actually are. The marts are written into
+    # Postgres from there, because that is what the dashboard can read.
+    "dbt-duckdb>=1.8,<2.0",
+]
 dev = [
     "pytest>=8.2,<10.0",
     "pytest-asyncio>=0.23,<2.0",

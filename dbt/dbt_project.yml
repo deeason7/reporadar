@@ -1,0 +1,26 @@
+name: reporadar
+version: "0.1.0"
+config-version: 2
+profile: reporadar
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+clean-targets: ["target", "dbt_packages"]
+
+flags:
+  # Usage statistics are sent by default. This project sends nothing anywhere it
+  # does not have to, and a build step is not a thing that should phone home.
+  send_anonymous_usage_stats: false
+
+models:
+  reporadar:
+    staging:
+      # Views in the query engine's own memory: staging exists to give the marts
+      # typed columns, not to store anything. Nothing reads it between runs.
+      +materialized: view
+    marts:
+      # Tables in Postgres, because that is the database the dashboard can read.
+      # The models are computed over the Parquet lake and land here.
+      +materialized: table
+      +database: pg
+      +schema: marts

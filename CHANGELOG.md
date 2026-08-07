@@ -160,6 +160,25 @@ All notable changes to this project are documented here, per
   anything is unbacked, so a scheduled run cannot report success over a store with holes. It never
   writes: a checker that repaired what it found would become a second author of the record, which is
   the situation it exists to detect.
+- A transformation layer built with dbt, and the first daily mart. `make marts` runs the models over
+  the Parquet lake and writes `marts.repo_daily` into Postgres: one row per repository per day, with
+  event and distinct-actor counts and a breakdown by event type. The models read the lake in place
+  because that is where the events are — the archive ingest writes Parquet, and the streaming path is
+  the only thing that writes the `events` table — while the finished aggregates go to Postgres, which
+  is what a dashboard can query. A staging model lifts the actor and repository fields out of the
+  published JSON into typed columns and keeps one row per event id; `payload` stays JSON, since
+  nothing downstream has earned a typed view of it yet. Timestamps are converted from the archive's
+  zoneless convention by naming the zone rather than casting, which would have read them as local
+  time and moved every event by the reader's offset — invisibly so on a machine already set to UTC.
+  The models are checked against data on every build, not merely parsed: identifiers are unique, the
+  fields extracted from JSON are not silently null, per-type counts cannot exceed their total, and
+  each event's partition still agrees with its own timestamp, which is the assumption the daily grain
+  rests on. Continuous integration builds the models against a generated lake and then files an hour's
+  events under the wrong hour to confirm the checks can fail. Published events that carry an empty
+  repository object — three in 5,090,496 measured — cannot belong to a per-repository row, so they are
+  excluded from it and reported every time rather than dropped quietly; the build fails only if the
+  count rises far enough to mean the envelope changed. The tooling is an optional extra, so the
+  services that poll, consume and ingest do not carry it.
 
 ### Changed
 - The local stack no longer publishes its ports to every network interface. Kafka, TimescaleDB and

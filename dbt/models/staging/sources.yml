@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: lake
+    description: >
+      The columnar copy of the hourly public-event archive, partitioned by event
+      date and hour. Read in place — the files are the source, so there is no
+      load step to go stale.
+    meta:
+      # The lake root follows the same single knob the services use for where
+      # data lives, so a deployment that moves the data moves this too.
+      external_location: "read_parquet('{{ env_var('REPORADAR_DATA_DIR', 'data') }}/lake/dt=*/hr=*/events.parquet', hive_partitioning=true)"
+    tables:
+      - name: events
+        description: One row per public event, exactly as published.

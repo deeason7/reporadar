@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: repo_daily
+    description: >
+      Daily activity per repository: how much happened, how many distinct people
+      made it happen, and the breakdown by event type.
+    columns:
+      - name: day
+        description: The UTC day the events belong to.
+        data_tests:
+          - not_null
+      - name: repo_id
+        description: Numeric repository id.
+        data_tests:
+          - not_null
+      - name: repo_name
+        description: The repository's name as of that day's most recent event.
+        data_tests:
+          - not_null
+      - name: events
+        description: Events recorded for this repository on this day.
+        data_tests:
+          - not_null
+      - name: actors
+        description: Distinct accounts that produced them.
+        data_tests:
+          - not_null

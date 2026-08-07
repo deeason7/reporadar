@@ -1,8 +1,8 @@
-.PHONY: setup lint fmt test up down logs provision up-app down-app logs-app image
+.PHONY: setup lint fmt test up down logs provision up-app down-app logs-app image marts
 
 # One-time dev setup: environment + hooks
 setup:
-	uv sync --extra dev
+	uv sync --extra dev --extra dbt
 	uv run pre-commit install
 
 # Zero-warning gate: style, format, types (same three CI runs)
@@ -46,3 +46,15 @@ logs-app:
 # Build the runtime image alone, the way CI does.
 image:
 	docker build -t reporadar:dev .
+
+# Build the marts and run their tests. Reads the Parquet lake in place and writes
+# tables into Postgres, so the database has to be up (`make up`).
+#
+# The settings come from .env, the same file every service reads, so there is one
+# place where the database address lives. `build` rather than `run`: a model and
+# its tests are one unit, and a mart that fails its tests should not be left
+# sitting in the schema the dashboard reads.
+marts:
+	set -a; . ./.env; set +a; \
+	REPORADAR_DATA_DIR="$${REPORADAR_DATA_DIR:-data}" \
+	uv run dbt build --project-dir dbt --profiles-dir dbt

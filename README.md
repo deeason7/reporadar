@@ -181,6 +181,35 @@ unprivileged user, and the services restart unless explicitly stopped. A restart
 the archive ingest re-derives what is outstanding from the hours record rather than resuming a
 plan, so it converges again from wherever it was interrupted.
 
+## Building the marts
+
+Daily aggregates are built with dbt. The models run over the Parquet lake and write their
+results into Postgres:
+
+```bash
+make up                   # the database has to be running
+make marts                # build the models and run their tests
+```
+
+The split is deliberate and it is the part worth understanding. **The events are in the lake,
+not in the database** — the archive ingest writes Parquet and a record of which hours it has,
+and the streaming path is the only thing that writes the `events` table. So the models read the
+lake directly, in place, and only the finished aggregates are written to Postgres, which is what
+the dashboard can query. The query engine attaches the database for that write, which also lets a
+model join what actually landed against the record of which hours were supposed to.
+
+Two things fall out of it. Models are checked against the data on every build, not just parsed:
+identifiers are unique, the columns lifted out of the published JSON are not silently null, and
+each event's partition still agrees with its own timestamp — the assumption the daily grain rests
+on. And the transformation tools are an optional extra (`uv sync --extra dbt`), so the services
+that poll, consume and ingest never carry them.
+
+Rare, real gaps are reported rather than hidden or dropped quietly. A few published events carry
+an empty repository object — three in the 5,090,496 events measured on 2026-07-28/29, all of them
+fork events. Those cannot belong to a per-repository row, so they are excluded from it, and the
+tests warn every time one appears instead of passing silently. The build only fails if the count
+jumps far enough to mean the envelope changed rather than that the publisher did something rare.
+
 ## Compliance
 
 Independent research project; **not affiliated with or endorsed by GitHub**. Data comes from
