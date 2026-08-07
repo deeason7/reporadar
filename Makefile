@@ -1,4 +1,4 @@
-.PHONY: setup lint fmt test up down logs provision up-app down-app logs-app image marts
+.PHONY: setup lint fmt test up down logs provision up-app down-app logs-app image marts grafana-grants
 
 # One-time dev setup: environment + hooks
 setup:
@@ -58,3 +58,22 @@ marts:
 	set -a; . ./.env; set +a; \
 	REPORADAR_DATA_DIR="$${REPORADAR_DATA_DIR:-data}" \
 	uv run dbt build --project-dir dbt --profiles-dir dbt
+
+# Create (or update) the role the dashboard connects as, and grant it exactly the
+# published aggregates and the hours record.
+#
+# Run once after `make up`, and again after changing GRAFANA_DB_PASSWORD. It is
+# idempotent on purpose: the container's own initialisation scripts only run on a
+# database that does not exist yet, and by the time anyone wants a dashboard the
+# database is long since created.
+#
+# Piped through stdin rather than passed as a path, because the file lives in the
+# working tree and psql runs inside the container.
+grafana-grants:
+	set -a; . ./.env; set +a; \
+	docker compose exec -T timescaledb psql \
+		-U "$${POSTGRES_USER:-reporadar}" -d "$${POSTGRES_DB:-reporadar}" \
+		-v grafana_password="$${GRAFANA_DB_PASSWORD:?set GRAFANA_DB_PASSWORD in .env}" \
+		-v dbname="$${POSTGRES_DB:-reporadar}" \
+		-v owner="$${POSTGRES_USER:-reporadar}" \
+		-f - < sql/grafana_reader.sql

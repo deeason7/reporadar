@@ -1,0 +1,173 @@
+{
+  "uid": "reporadar-pipeline-ops",
+  "title": "Pipeline operations",
+  "description": "How much of the published archive this instance actually holds, and what the daily aggregates were computed from. Every panel reads the published aggregates or the record of ingested hours; none of them can read per-account rows, because the connection is not permitted to.",
+  "tags": ["reporadar"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "1m",
+  "time": { "from": "now-90d", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Hours ingested",
+      "description": "Hours the ingest has converted and recorded. This is a count of rows in the record, not of files on disk — `reporadar verify` is what compares the two, and it exists because a completion record is only meaningful relative to the store it describes.",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "text" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select count(*) as value from archive_hours where status = 'ingested'",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Hours outstanding",
+      "description": "Hours recorded as missing from the publisher or as failed. Not the same as unattempted: an hour nothing has looked at yet has no row at all, which is why the gap scan derives what is due from the calendar rather than from this table.",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "text", "value": null }, { "color": "orange", "value": 1 } ] },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select count(*) as value from archive_hours where status in ('missing', 'failed')",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Hours since the newest ingested hour",
+      "description": "Freshness. The publisher releases an hour about five minutes after it closes, so a healthy always-on instance sits near one or two. A number that keeps climbing means the convergence loop is not running, not that hours are missing — the loop is level-triggered, so it recovers the whole gap on its next pass rather than needing a catch-up.",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h",
+          "decimals": 1,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "text", "value": null }, { "color": "orange", "value": 3 }, { "color": "red", "value": 24 } ] },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select extract(epoch from ((now() at time zone 'UTC') - max(day + make_interval(hours => hour)))) / 3600.0 as value from archive_hours where status = 'ingested'",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Events recorded",
+      "description": "Summed from the hours record rather than from the aggregates, so it stays a second, independent count of the same thing. When it exceeds the total charted below, the two are describing different stores: the hours record is one table shared by every run, while the columnar files it points at live under whichever data directory produced them. That is a real condition rather than a fault, and `reporadar verify` is what reports it precisely — a completion record only means something relative to the store it describes.",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "text" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select coalesce(sum(events), 0) as value from archive_hours where status = 'ingested'",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Coverage — hours held per day, out of 24",
+      "description": "The panel to read before any of the others. A daily total computed from seven hours and one computed from twenty-four look identical in every chart except this one, so a dip here explains a dip everywhere else. It is read from the aggregates, which carry their own coverage rather than having it attached afterwards.",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 24,
+          "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 1 },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "orange", "value": null }, { "color": "green", "value": 24 } ] },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "showLegend": false }, "tooltip": { "mode": "single" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select day as time, hours_present as \"hours held\" from marts.ecosystem_daily where $__timeFilter(day) order by day",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Events, repositories and accounts per day",
+      "description": "Volume at the ecosystem grain. Compare against the coverage panel before reading a change as a change in GitHub rather than a change in how much of the day was ingested. Accounts are counted, never listed — per-account rows live in a schema this connection cannot read.",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "always" }, "unit": "short" },
+        "overrides": []
+      },
+      "options": { "legend": { "showLegend": true, "placement": "bottom", "displayMode": "list" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select day as time, events, repos as repositories, actors as accounts from marts.ecosystem_daily where $__timeFilter(day) order by day",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" }
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Most recent hours",
+      "description": "The record itself, newest first — what the aggregates above are derived from. An hour appears here once it has been attempted; its status is the current one, because an hour published late is re-recorded rather than left at its first answer.",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 13 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select day, hour, status, events, bytes, detail, recorded_at from archive_hours order by day desc, hour desc limit 50",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" }
+        }
+      ]
+    }
+  ]
+}

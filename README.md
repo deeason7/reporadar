@@ -233,6 +233,32 @@ demand or a coordinated campaign is not answerable at repository grain — the c
 launch look the same there — and the aggregate that separates them is legitimate in a way that
 publishing a page about an individual account is not.
 
+## The operations dashboard
+
+Grafana comes up already configured — datasource and dashboards are files in this repository, not
+rows in a volume, so a fresh stack is a working dashboard and a change to a panel appears in a diff.
+
+```bash
+make up                   # the stack, Grafana included
+make grafana-grants       # once: create the role the dashboard reads through
+make marts                # build the aggregates it charts
+```
+
+Then open Grafana on `GRAFANA_PORT` (`3001` by default, published on loopback only).
+
+The dashboard answers the operational question rather than the product one: how much of the
+published archive this instance actually holds. Hours ingested and outstanding, how stale the newest
+ingested hour is, and — the panel to read before any of the others — **how many of each day's
+twenty-four hours the aggregates were computed from**. A daily total from seven hours and one from a
+full day look identical in every chart except that one.
+
+**The dashboard connects as its own database role, not the application's.** It may read the
+published aggregates and the record of ingested hours. It may not read the per-account table, and it
+may not read the raw event store; both refuse it at the database, not by convention. That is what
+turns the promise below into something enforced — a panel charting the busiest accounts is one query
+away from being written, and a `permission denied` away from working. Continuous integration checks
+the same boundary a second way, by rejecting any panel whose SQL names those tables at all.
+
 ## Compliance
 
 Independent research project; **not affiliated with or endorsed by GitHub**. Data comes from

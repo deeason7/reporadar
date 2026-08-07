@@ -84,8 +84,18 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
+      # Read by the provisioned datasource, not by Grafana itself. The dashboard
+      # connects as a role that can read the published aggregates and the hours
+      # record and nothing else; `make grafana-grants` is what creates it.
+      POSTGRES_DB: ${POSTGRES_DB:-reporadar}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:?set GRAFANA_DB_PASSWORD in .env}
     volumes:
       - grafana_data:/var/lib/grafana
+      # Datasource and dashboards as files, read-only. Provisioning them means a
+      # fresh volume comes up already configured, and a change to a panel appears
+      # in a diff instead of only inside somebody's browser.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       timescaledb:
         condition: service_healthy

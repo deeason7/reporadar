@@ -1,0 +1,18 @@
+# Where Grafana finds the dashboards, so they are files in the repository rather
+# than rows in a volume. The consequence worth having is that a dashboard change
+# shows up in a diff.
+apiVersion: 1
+
+providers:
+  - name: reporadar
+    type: file
+    # Edits made in the browser are not saved back. Otherwise the file and the
+    # running dashboard drift, and the file — the only version anyone reviews —
+    # quietly stops being what is on screen.
+    allowUiUpdates: false
+    # A deleted file removes its dashboard, so the directory is the whole truth.
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

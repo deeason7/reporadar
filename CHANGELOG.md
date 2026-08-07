@@ -193,6 +193,19 @@ All notable changes to this project are documented here, per
   something a reader is asked to respect. Each grain has a test asserting it is the grain it claims
   to be, and the ecosystem row is range-checked on coverage, since a count of hours above
   twenty-four would mean the partition column had stopped meaning an hour of the day.
+- An operations dashboard, provisioned from files rather than configured in the browser: datasource,
+  dashboard provider and the dashboard itself are committed, so a fresh Grafana volume comes up
+  already working and a change to a panel shows up in a diff. It reports how much of the published
+  archive this instance holds — hours ingested and outstanding, how stale the newest ingested hour
+  is, and how many of each day's twenty-four hours the aggregates were computed from.
+- A dedicated, least-privilege database role for the dashboard (`make grafana-grants`), permitted to
+  read the published aggregates and the record of ingested hours and nothing else. The per-account
+  table and the raw event store both refuse it. Because the aggregates are rebuilt by dropping and
+  recreating them, the grant is accompanied by a default privilege for future tables — without it
+  the dashboard works until the next build and then reports permission denied for tables that
+  visibly exist. Continuous integration checks the same boundary from the other side, rejecting any
+  panel whose SQL names those tables, and rejecting provisioning that carries a literal credential
+  or a shell-style variable default, which Grafana does not expand.
 
 ### Changed
 - The local stack no longer publishes its ports to every network interface. Kafka, TimescaleDB and

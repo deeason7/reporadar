@@ -39,6 +39,7 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-validate
           GRAFANA_ADMIN_PASSWORD: ci-validate
+          GRAFANA_DB_PASSWORD: ci-validate
         # Both ways round: the default set is the infrastructure a developer
         # starts, and the app profile is what a deploy runs. Only checking the
         # default set would leave every application service unvalidated.
@@ -50,6 +51,7 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-validate
           GRAFANA_ADMIN_PASSWORD: ci-validate
+          GRAFANA_DB_PASSWORD: ci-validate
         # `config -q` proves the file parses and every variable resolves. It
         # proves nothing about what the file *says*, and three of the things it
         # says matter: a published port that binds every interface is reachable
@@ -95,6 +97,7 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-validate
           GRAFANA_ADMIN_PASSWORD: ci-validate
+          GRAFANA_DB_PASSWORD: ci-validate
         # A check that has never been watched failing is not known to work. This
         # republishes Kafka on every interface in an overlay and requires the
         # check above to reject it. If this step passes, the real one is blind.
@@ -257,3 +260,192 @@ jobs:
             echo "the runtime image carries the transformation tooling"; exit 1
           fi
           echo "runtime image carries no transformation tooling"
+
+  dashboards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check what the provisioning actually says
+        # The dashboard is provisioned from files, which makes it reviewable — and
+        # makes it possible to assert things about it that are otherwise only
+        # discovered by starting Grafana and clicking.
+        #
+        # Three properties, each of which has a failure that names neither the file
+        # nor the cause:
+        #
+        # 1. Grafana substitutes `${VAR}` in provisioning files but does NOT
+        #    understand the shell's `${VAR:-default}`. Written that way, the value
+        #    resolves to an empty string; an empty database name then makes the
+        #    driver fall back to the user, and the error is
+        #    `database "grafana_reader" does not exist` — which points at neither
+        #    the variable nor the file that set it. Defaults belong in the compose
+        #    file, which does understand that syntax.
+        #
+        # 2. A credential must never be a literal here. This file is committed.
+        #
+        # 3. The dashboard must not query the per-account schema, or the raw event
+        #    table. The database grant already refuses both, and that is the real
+        #    boundary; this is the cheaper one that fails in review rather than at
+        #    runtime, and it catches the panel before somebody wonders why it is
+        #    empty and "fixes" it by widening the grant.
+        run: |
+          python3 - <<'EOF'
+          import json, pathlib, re, sys
+
+          problems = []
+          prov = sorted(pathlib.Path("grafana/provisioning").rglob("*.yml"))
+          if not prov:
+              problems.append("no provisioning files found — the check is looking in the wrong place")
+
+          def settings_only(text):
+              # Comments are stripped before scanning, because the file that gets
+              # this right explains why — quoting the broken syntax in the sentence
+              # warning against it. Scanning raw text makes the explanation itself
+              # the finding, which is a check that punishes documenting the trap.
+              return "\n".join(re.sub(r"(?:^|\s)#.*$", "", line) for line in text.splitlines())
+
+          for f in prov:
+              text = settings_only(f.read_text())
+              for m in re.finditer(r"\$\{[A-Za-z_][A-Za-z0-9_]*:[-?][^}]*\}", text):
+                  problems.append(f"{f}: {m.group(0)} — Grafana does not expand shell-style defaults")
+              for m in re.finditer(r"(?i)^\s*password:\s*(.+)$", text, re.M):
+                  if not m.group(1).strip().startswith("${"):
+                      problems.append(f"{f}: password is a literal, not an environment reference")
+
+          uids = set()
+          for f in sorted(pathlib.Path("grafana/provisioning/datasources").rglob("*.yml")):
+              for m in re.finditer(r"^\s*uid:\s*(\S+)", f.read_text(), re.M):
+                  uids.add(m.group(1))
+
+          FORBIDDEN = ("restricted.", "public.events", " events ")
+          dashboards = sorted(pathlib.Path("grafana/dashboards").rglob("*.json"))
+          if not dashboards:
+              problems.append("no dashboards found — the check is looking in the wrong place")
+
+          for f in dashboards:
+              try:
+                  doc = json.loads(f.read_text())
+              except json.JSONDecodeError as exc:
+                  problems.append(f"{f}: not valid JSON — {exc}")
+                  continue
+              for panel in doc.get("panels", []):
+                  for t in panel.get("targets", []):
+                      uid = (t.get("datasource") or {}).get("uid")
+                      if uid not in uids:
+                          problems.append(
+                              f"{f}: panel {panel.get('id')} points at datasource {uid!r}, "
+                              f"which is not provisioned (have: {sorted(uids)})")
+                      sql = (t.get("rawSql") or "").lower()
+                      for bad in FORBIDDEN:
+                          if bad.strip() and bad in sql:
+                              problems.append(
+                                  f"{f}: panel {panel.get('id')} queries {bad.strip()!r} — "
+                                  f"the dashboard connection is not permitted to read it")
+
+          print(f"checked {len(prov)} provisioning files and {len(dashboards)} dashboards")
+          if problems:
+              print("\n".join("  FAIL " + p for p in problems))
+              sys.exit(1)
+          print("  no shell-default syntax, no literal credentials, "
+                "every panel on a provisioned datasource, none reading per-account rows")
+          EOF
+
+      - name: Negative control — the checks must be able to fail
+        # One planted defect per check, applied and reverted individually, because
+        # a control that trips several checks at once proves only that at least one
+        # of them works.
+        #
+        # Written in Python rather than `sed -i`, which is not portable: BSD sed
+        # rejects the GNU spelling, so on a developer's machine the mutation
+        # silently does not apply. That matters more than portability usually does
+        # here — a control that fails to mutate reports "the check passed a broken
+        # tree" when nothing was ever broken, which is the exact false alarm this
+        # step exists to rule out. Every mutation asserts the file changed.
+        run: |
+          python3 - <<'EOF'
+          import hashlib, json, pathlib, re, sys
+
+          ds   = pathlib.Path("grafana/provisioning/datasources/timescaledb.yml")
+          dash = sorted(pathlib.Path("grafana/dashboards").rglob("*.json"))[0]
+          originals = {p: p.read_bytes() for p in (ds, dash)}
+          digest = {p: hashlib.sha256(b).hexdigest() for p, b in originals.items()}
+
+          def strip(t):
+              return "\n".join(re.sub(r"(?:^|\s)#.*$", "", l) for l in t.splitlines())
+
+          def check():
+              """The same three assertions the step above makes."""
+              found = []
+              for f in sorted(pathlib.Path("grafana/provisioning").rglob("*.yml")):
+                  text = strip(f.read_text())
+                  found += [f"{f}: shell default"
+                            for _ in re.finditer(r"\$\{[A-Za-z_][A-Za-z0-9_]*:[-?][^}]*\}", text)]
+                  for m in re.finditer(r"(?i)^\s*password:\s*(.+)$", text, re.M):
+                      if not m.group(1).strip().startswith("${"):
+                          found.append(f"{f}: literal credential")
+              for f in sorted(pathlib.Path("grafana/dashboards").rglob("*.json")):
+                  doc = json.loads(f.read_text())
+                  for panel in doc.get("panels", []):
+                      for t in panel.get("targets", []):
+                          if "restricted." in (t.get("rawSql") or "").lower():
+                              found.append(f"{f}: panel {panel.get('id')} reads per-account rows")
+              return found
+
+          def mutate_ds(old, new):
+              text = ds.read_text()
+              # Only outside comments — the file explains the trap by quoting it,
+              # so a naive replace would edit the sentence and not the setting.
+              body = [l for l in text.splitlines() if not l.lstrip().startswith("#")]
+              if sum(old in l for l in body) != 1:
+                  return None
+              ds.write_text(text.replace(old, new, 1) if old in text else text)
+              return ds.read_text() != text
+
+          try:
+              if check():
+                  print("the tree is already failing its own checks before any mutation")
+                  sys.exit(1)
+
+              results = []
+
+              # 1. the shell-style default this job exists for
+              ok = mutate_ds("database: ${POSTGRES_DB}", "database: ${POSTGRES_DB:-reporadar}")
+              results.append(("shell-style default", ok, len(check())))
+              ds.write_bytes(originals[ds])
+
+              # 2. a credential written as a literal
+              ok = mutate_ds("password: ${GRAFANA_DB_PASSWORD}", "password: hunter2")
+              results.append(("literal credential", ok, len(check())))
+              ds.write_bytes(originals[ds])
+
+              # 3. a panel reading the per-account schema
+              doc = json.loads(dash.read_text())
+              doc["panels"][0]["targets"][0]["rawSql"] = "select count(*) from restricted.actor_daily"
+              dash.write_text(json.dumps(doc))
+              ok = dash.read_bytes() != originals[dash]
+              results.append(("per-account query", ok, len(check())))
+              dash.write_bytes(originals[dash])
+
+              bad = 0
+              for name, applied, findings in results:
+                  if not applied:
+                      print(f"  FAIL {name}: mutation did not apply — this control tests nothing")
+                      bad += 1
+                  elif findings == 0:
+                      print(f"  FAIL {name}: applied, and the check did not notice")
+                      bad += 1
+                  else:
+                      print(f"  fired {name}: {findings} finding(s)")
+              if bad:
+                  sys.exit(1)
+          finally:
+              for p, b in originals.items():
+                  p.write_bytes(b)
+              for p in originals:
+                  if hashlib.sha256(p.read_bytes()).hexdigest() != digest[p]:
+                      print(f"  FAIL {p} was not restored"); sys.exit(1)
+              print("  all files restored byte-identical")
+
+          print("negative control fired: every check rejects its own planted defect")
+          EOF

@@ -1,0 +1,44 @@
+# The dashboard's connection, provisioned as a file rather than clicked into the
+# UI. Grafana keeps hand-made datasources in its own database, which means they
+# live in a volume, are invisible to review, and vanish the first time somebody
+# resets it. This file is the whole configuration, and a reader can see what the
+# dashboard is allowed to reach without logging in.
+apiVersion: 1
+
+datasources:
+  - name: RepoRadar
+    uid: reporadar-postgres
+    # Core datasource. There is no DuckDB one, which is why the aggregates are
+    # computed over the lake but written here to be read.
+    type: grafana-postgresql-datasource
+    # `proxy`, not `direct`: queries go through the Grafana server, so the
+    # database never has to be reachable from the browser.
+    access: proxy
+    # The compose service name — container to container on the internal network.
+    # Nothing about this path is published to the host.
+    url: timescaledb:5432
+    # Plain `${VAR}`, with no default. Grafana's provisioning substitutes
+    # environment variables but does not understand the shell's `:-` fallback, so
+    # `${POSTGRES_DB:-reporadar}` here resolves to an empty string — whereupon the
+    # driver falls back to using the *user* as the database name and fails with
+    # `database "grafana_reader" does not exist`, an error that names neither the
+    # variable nor the file. The default lives in the compose file, which does
+    # understand that syntax, so it is written in exactly one place.
+    database: ${POSTGRES_DB}
+    # Not the application role. This one can read the published aggregates and the
+    # record of ingested hours, and nothing else — see sql/grafana_reader.sql for
+    # what is deliberately left out and why.
+    user: grafana_reader
+    isDefault: true
+    editable: false
+    jsonData:
+      # Both endpoints are inside the compose network and the database publishes
+      # no host port, so there is no transport here to protect. Turning this on
+      # would need certificates the stack does not have and would fail closed.
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: true
+    secureJsonData:
+      # Read from the environment. The value is never in this file, which is why
+      # this file can be committed.
+      password: ${GRAFANA_DB_PASSWORD}
