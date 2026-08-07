@@ -30,7 +30,7 @@ template fallback, so no model is ever a point of failure.
 > that a measured number is published with its conditions attached — not because it is a settled
 > figure, and not as a claim about what this system captures in general.
 >
-> Not built yet: the analytics marts, the models, the dashboards. Nothing is deployed anywhere and
+> Not built yet: the risk and forecasting models, and the dashboards. Nothing is deployed anywhere and
 > nothing is intended to be — this runs locally, and reproducing it from this README is the point.
 > The changelog tracks what is actually in place.
 
@@ -209,6 +209,29 @@ an empty repository object — three in the 5,090,496 events measured on 2026-07
 fork events. Those cannot belong to a per-repository row, so they are excluded from it, and the
 tests warn every time one appears instead of passing silently. The build only fails if the count
 jumps far enough to mean the envelope changed rather than that the publisher did something rare.
+
+### The daily grains, and where each one lives
+
+Three models describe the same events at three grains: per repository per day, per day for the
+whole ecosystem, and per account per day.
+
+The ecosystem row carries **how many of the day's twenty-four hours the lake actually holds**,
+beside the totals rather than in a caption. A daily total is otherwise a sum over an unknown
+fraction of the day: seven ingested hours and a full day produce numbers that look alike and mean
+very different things, and nothing in the number itself says which. It also counts the events with
+no repository separately, so the repository and ecosystem grains can be reconciled against each
+other by subtraction rather than by assertion — a test does exactly that on every build, and it
+compares against a measured column instead of the constant three, because there is no reason for
+that to stay three.
+
+The per-account model is written to a **separate database schema** from the other two. Aggregating
+person-level signals before publishing them is a promise this project makes below, and a schema
+boundary is how it is kept: a dashboard connection granted the published schema cannot read the
+per-account table at all. The alternative was a comment asking readers not to chart it, which is
+followed wherever somebody remembers it. It exists because whether a surge of stars is genuine
+demand or a coordinated campaign is not answerable at repository grain — the campaign and the
+launch look the same there — and the aggregate that separates them is legitimate in a way that
+publishing a page about an individual account is not.
 
 ## Compliance
 

@@ -179,6 +179,20 @@ All notable changes to this project are documented here, per
   excluded from it and reported every time rather than dropped quietly; the build fails only if the
   count rises far enough to mean the envelope changed. The tooling is an optional extra, so the
   services that poll, consume and ingest do not carry it.
+- The other two daily grains: `marts.ecosystem_daily`, one row per day for the whole ecosystem, and
+  `restricted.actor_daily`, one row per account per day. The ecosystem row carries how many of the
+  day's twenty-four hours the lake actually holds, beside the totals rather than in a caption,
+  because a daily total is otherwise a sum over an unknown fraction of the day — a partly ingested
+  day and a complete one produce numbers that look alike. It also counts the events published with no
+  repository separately, which is what lets the repository and ecosystem grains be reconciled against
+  each other by subtraction; a test does that on every build, comparing against that measured column
+  rather than against a constant, since the number of such events is not fixed. The per-account model
+  is written to a separate database schema from the published ones, so a dashboard connection granted
+  the published schema cannot read it — aggregating person-level signals before publishing them was
+  already a stated commitment, and this makes it something the database enforces rather than
+  something a reader is asked to respect. Each grain has a test asserting it is the grain it claims
+  to be, and the ecosystem row is range-checked on coverage, since a count of hours above
+  twenty-four would mean the partition column had stopped meaning an hour of the day.
 
 ### Changed
 - The local stack no longer publishes its ports to every network interface. Kafka, TimescaleDB and

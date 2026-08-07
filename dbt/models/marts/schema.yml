@@ -26,3 +26,43 @@ models:
         description: Distinct accounts that produced them.
         data_tests:
           - not_null
+
+  - name: ecosystem_daily
+    description: >
+      One row per day for the whole ecosystem, carrying the coverage the totals
+      were computed from. A daily total without `hours_present` beside it is a sum
+      over an unknown fraction of the day.
+    columns:
+      - name: day
+        description: The UTC day the events belong to.
+        data_tests:
+          - not_null
+          - unique
+      - name: events
+        description: Every event published that day and held in the lake.
+        data_tests:
+          - not_null
+      - name: repos
+        description: Distinct repositories active that day.
+        data_tests:
+          - not_null
+      - name: actors
+        description: Distinct accounts active that day.
+        data_tests:
+          - not_null
+      - name: hours_present
+        description: >
+          How many of the day's 24 hours the lake holds. A day mid-ingest and a day
+          with permanent publisher gaps are identical in every other column.
+        # Range-checked by `assert_ecosystem_daily_is_sane`, a singular test, rather
+        # than by a package's `accepted_range`. The bound is worth asserting; a
+        # whole dependency added in order to assert it is not.
+        data_tests:
+          - not_null
+      - name: events_without_repo
+        description: >
+          Events published with an empty repository object. Counted rather than
+          dropped, because `repo_daily` excludes them and the two marts can only be
+          reconciled if the difference between them is a recorded number.
+        data_tests:
+          - not_null

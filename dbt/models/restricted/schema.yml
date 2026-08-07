@@ -1,0 +1,34 @@
+version: 2
+
+models:
+  - name: actor_daily
+    description: >
+      Daily activity per account: how much an account did, and across how many
+      distinct repositories it did it. Lives in the `restricted` schema because it
+      is the only model at person grain — published views aggregate to repository
+      or ecosystem level, and a schema boundary enforces that where a comment
+      would only request it.
+    columns:
+      - name: day
+        description: The UTC day the events belong to.
+        data_tests:
+          - not_null
+      - name: actor_id
+        description: Numeric account id.
+        data_tests:
+          - not_null
+      - name: actor_login
+        description: The account's login as of that day's most recent event.
+        data_tests:
+          - not_null
+      - name: events
+        description: Events produced by this account on this day.
+        data_tests:
+          - not_null
+      - name: repos
+        description: >
+          Distinct repositories the account touched that day. The ratio of this to
+          `events` is the feature that separates broad, shallow activity from
+          repeated activity on one repository.
+        data_tests:
+          - not_null

@@ -24,3 +24,12 @@ models:
       +materialized: table
       +database: pg
       +schema: marts
+    restricted:
+      # Person-level rows, in their own schema on purpose. The rule is that
+      # per-account analysis is aggregated to repository or ecosystem level in
+      # anything published; putting those models somewhere a dashboard connection
+      # scoped to `marts` cannot reach makes that a grant the database enforces
+      # rather than a convention a reviewer has to catch.
+      +materialized: table
+      +database: pg
+      +schema: restricted
