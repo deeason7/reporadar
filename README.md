@@ -269,7 +269,54 @@ demand or a coordinated campaign is not answerable at repository grain — the c
 launch look the same there — and the aggregate that separates them is legitimate in a way that
 publishing a page about an individual account is not.
 
-## The operations dashboard
+### Movement between days, and why it is not measured in stars
+
+A fourth model ranks repositories by how their participation changed from one day to the next. It
+measures **distinct accounts, not stars and not event volume**, and both exclusions were measured
+rather than assumed.
+
+**Stars are not available to rank on** — but not for the obvious reason, and the difference matters
+enough to state. Across 96 complete archive hours (15.8 million events), star events are **0.033%**
+of everything published, which looks like a feed that does not carry stars. It is not. On
+repositories where **five or more accounts** are active they are **1.04%** — thirty-one times higher —
+and the whole event mix there looks like ordinary software development rather than the 94% pushes the
+raw total suggests.
+
+The reason the two figures differ is the denominator. **Roughly two thirds of all events go to
+single-account repositories with generated six-letter names**, from a population of about a million
+accounts pushing a median of twice each. A share of the total is therefore a statement about that
+population, not about the ecosystem — which is worth remembering for every rate on this page.
+
+What does rule stars out is **density per repository per day**: about 1,300 star events a day across
+the entire feed means most repositories have no star on most days, so a day-over-day ranking built on
+that column would be sorting mostly ties.
+
+**Event volume ranks automation.** On one full day, every one of the twelve busiest repositories by
+event count had exactly one account behind it — the largest being 5,118 pushes from a single
+account. Ranking the same day by distinct accounts instead returns established, many-person projects.
+The two lists share no rows, which is the point: distinct accounts is not a tidied-up event count,
+it selects a different population.
+
+So the model compares each repository against **itself on the previous calendar day**, and only when
+the lake holds both days in full. A partial day is excluded rather than scaled up to twenty-four
+hours, because activity is not spread evenly across the day and scaling three night hours would
+invent a quiet day and then report it as a decline. Days whose predecessor is missing produce no rows
+at all, so a gap in the lake cannot be presented as movement. A repository absent on the previous day
+counts as zero rather than unknown — which is only correct *because* that day is known to be
+complete.
+
+Repositories qualify at **five distinct accounts** on either side of the comparison, a floor chosen
+from the measured distribution rather than picked for roundness: 96% of repository-days have exactly
+one account and the highest count observed on a day is 59, so a lower floor buries the collaborative
+repositories among hundreds of thousands of single-account ones. The threshold is a setting, not a
+literal, because the right value depends on how much of the feed the lake holds.
+
+**No judgement is attached to a rise.** Whether movement is genuine interest or manufactured is a
+question about account quality and coordination between accounts, and neither is modelled yet.
+Nothing in the model or the dashboard says organic, suspicious, or otherwise — the output is the
+movement and the counts behind it.
+
+## The dashboards
 
 Grafana comes up already configured — datasource and dashboards are files in this repository, not
 rows in a volume, so a fresh stack is a working dashboard and a change to a panel appears in a diff.
@@ -282,12 +329,17 @@ make marts                # build the aggregates it charts
 
 Then open Grafana on `GRAFANA_PORT` (`3001` by default, published on loopback only).
 
-The dashboard answers the operational question rather than the product one: how much of the
-published archive this instance actually holds. Hours ingested and outstanding, how stale the newest
-ingested hour is, **how many of each day's twenty-four hours the aggregates were computed from** — a
-daily total from seven hours and one from a full day look identical in every chart except that one —
-and, across the top, **how many claimed hours the aggregates do not cover at all**, so a reader can
-see that the charts are behind the lake without having to run anything.
+There are two. **Pipeline operations** answers the operational question rather than the product one:
+how much of the published archive this instance actually holds. Hours ingested and outstanding, how
+stale the newest ingested hour is, **how many of each day's twenty-four hours the aggregates were
+computed from** — a daily total from seven hours and one from a full day look identical in every
+chart except that one — and, across the top, **how many claimed hours the aggregates do not cover at
+all**, so a reader can see that the charts are behind the lake without having to run anything.
+
+**Trending** is the product one: which repositories gained or lost participants between the two most
+recent complete days, with the counts on both sides rather than a score. It opens with a panel saying
+what the ranking measures and what it does not claim, because "trending" invites the reader to assume
+stars, and this ranks something else for the reasons set out above.
 
 **The dashboard connects as its own database role, not the application's.** It may read the
 published aggregates and the record of ingested hours. It may not read the per-account table, and it

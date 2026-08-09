@@ -1,0 +1,169 @@
+{
+  "uid": "reporadar-trending",
+  "title": "Trending",
+  "description": "Day-over-day movement in how many distinct accounts touched each repository. Measures participation, not popularity — the public event feed does not carry enough star events to rank on, and ranking on raw event volume returns automated accounts. Reads the published aggregates only.",
+  "tags": ["reporadar"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "5m",
+  "time": {"from": "now-90d", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "What this measures, and what it does not claim",
+      "gridPos": {"h": 5, "w": 24, "x": 0, "y": 0},
+      "options": {
+        "mode": "markdown",
+        "content": "**Movement is measured in distinct accounts, not stars and not event volume.** Ranking on stars is not available: the public feed carries roughly 25–69 star events an hour against ~165,000 events, and the most collaborative repositories on a full day show 0 or 1. Ranking on event volume returns automation instead — on a measured day, every one of the twelve busiest repositories by event count had exactly one account behind it, the largest being 5,118 pushes from a single account.\n\n**No judgement is attached to a rise.** Whether movement is organic or manufactured is a question about account quality and coordination between accounts, and this system does not model either yet. Nothing here should be read as a verdict.\n\n**Only complete days are compared, and only against the calendar day before.** A day the lake holds in part is excluded rather than scaled up, because activity is not spread evenly across the day. Days whose predecessor is missing produce no rows at all, so a gap in the lake cannot be presented as movement."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Days that can be compared",
+      "description": "A day appears only if the lake holds both it and the calendar day before it in full.",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 5},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select count(distinct day) as \"days\" from marts.repo_trending",
+          "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 1}, {"color": "green", "value": 2}]},
+          "color": {"mode": "thresholds"}
+        },
+        "overrides": []
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Repositories ranked on the latest day",
+      "description": "Repositories clearing the participation floor on either side of the comparison.",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 5},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select count(*) as \"repositories\" from marts.repo_trending where day = (select max(day) from marts.repo_trending)",
+          "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"}
+        }
+      ],
+      "fieldConfig": {"defaults": {"color": {"mode": "fixed", "fixedColor": "text"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Largest gain in accounts",
+      "description": "The biggest single-day increase in distinct participating accounts on the latest comparable day.",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 5},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select coalesce(max(actors_change), 0) as \"accounts\" from marts.repo_trending where day = (select max(day) from marts.repo_trending)",
+          "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"}
+        }
+      ],
+      "fieldConfig": {"defaults": {"color": {"mode": "fixed", "fixedColor": "green"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"}
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Appearing for the first time",
+      "description": "Repositories with no recorded events on the previous day. The previous day is held in full, so this is measured silence rather than an unobserved day.",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 5},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select count(*) as \"repositories\" from marts.repo_trending where absent_prior_day and day = (select max(day) from marts.repo_trending)",
+          "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"}
+        }
+      ],
+      "fieldConfig": {"defaults": {"color": {"mode": "fixed", "fixedColor": "blue"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"}
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Gaining participants — latest comparable day",
+      "description": "Ranked by absolute change in distinct accounts. The proportional column is reported, not ranked on: account counts are small integers, so a ratio has a tiny denominator almost everywhere.",
+      "gridPos": {"h": 11, "w": 12, "x": 0, "y": 9},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select rank_in_day as \"#\", repo_name as \"repository\", actors_prior as \"accounts, prior day\", actors as \"accounts\", actors_change as \"change\", round(actors_change_ratio::numeric, 2) as \"proportional\" from marts.repo_trending where day = (select max(day) from marts.repo_trending) and actors_change > 0 order by rank_in_day limit 25",
+          "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"}
+        }
+      ],
+      "fieldConfig": {"defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"}}}, "overrides": []},
+      "options": {"showHeader": true, "footer": {"show": false, "reducer": ["sum"], "countRows": false, "fields": ""}}
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Losing participants — latest comparable day",
+      "description": "The same measurement in the other direction. Shown because the participation floor is applied to whichever day is larger, so a repository falling away is not filtered out of the model.",
+      "gridPos": {"h": 11, "w": 12, "x": 12, "y": 9},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select repo_name as \"repository\", actors_prior as \"accounts, prior day\", actors as \"accounts\", actors_change as \"change\", round(actors_change_ratio::numeric, 2) as \"proportional\" from marts.repo_trending where day = (select max(day) from marts.repo_trending) and actors_change < 0 order by actors_change asc, actors_prior desc limit 25",
+          "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"}
+        }
+      ],
+      "fieldConfig": {"defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"}}}, "overrides": []},
+      "options": {"showHeader": true, "footer": {"show": false, "reducer": ["sum"], "countRows": false, "fields": ""}}
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "How many repositories are ranked each day",
+      "description": "The size of the ranked population per comparable day. A sharp change here is a change in the lake, not in the ecosystem.",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 20},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select day as time, count(*) filter (where actors_change > 0) as \"gaining\", count(*) filter (where actors_change < 0) as \"losing\", count(*) filter (where actors_change = 0) as \"unchanged\" from marts.repo_trending group by day order by day",
+          "datasource": {"type": "grafana-postgresql-datasource", "uid": "reporadar-postgres"}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"drawStyle": "bars", "fillOpacity": 60, "lineWidth": 1, "stacking": {"mode": "normal", "group": "A"}},
+          "color": {"mode": "palette-classic"}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}}
+    }
+  ]
+}

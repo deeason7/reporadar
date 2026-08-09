@@ -12,6 +12,14 @@ flags:
   # does not have to, and a build step is not a thing that should phone home.
   send_anonymous_usage_stats: false
 
+vars:
+  # The minimum distinct-actor count, on either side of the comparison, for a
+  # repository-day to appear in `repo_trending`. A variable rather than a literal
+  # because it is a judgement about what counts as collaborative activity, and the
+  # right value depends on how much of the feed the lake holds — the reasoning and
+  # the measured row counts behind this figure are in the model itself.
+  trending_min_actors: 5
+
 models:
   reporadar:
     staging:

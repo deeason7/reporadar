@@ -27,6 +27,54 @@ models:
         data_tests:
           - not_null
 
+  - name: repo_trending
+    description: >
+      Day-over-day movement in distinct participating accounts per repository,
+      restricted to calendar-adjacent days the lake holds in full. Measures
+      participation rather than popularity, and carries no verdict about whether
+      any movement is organic — that requires actor-quality and coordination
+      modelling this project has not built.
+    columns:
+      - name: day
+        description: The UTC day being measured.
+        data_tests:
+          - not_null
+      - name: repo_id
+        description: Numeric repository id.
+        data_tests:
+          - not_null
+      - name: repo_name
+        description: The repository's name as of that day's most recent event.
+        data_tests:
+          - not_null
+      - name: actors
+        description: Distinct accounts that touched the repository on `day`.
+        data_tests:
+          - not_null
+      - name: actors_prior
+        description: >
+          The same count for the previous calendar day, zero when the repository
+          had no events. Zero means measured silence, not an unobserved day — the
+          model only pairs days the lake holds in full.
+        data_tests:
+          - not_null
+      - name: actors_change
+        description: >
+          `actors` minus `actors_prior`. The column the day's ranking is built on,
+          in preference to the ratio, because actor counts are small integers.
+        data_tests:
+          - not_null
+      - name: actors_change_ratio
+        description: >
+          Proportional change, null when there was no prior activity to divide by.
+          Reported rather than ranked on.
+      - name: rank_in_day
+        description: >
+          Position within the day by `actors_change`, ties broken by `actors` and
+          then `repo_id` so a rebuild over unchanged data reproduces the order.
+        data_tests:
+          - not_null
+
   - name: ecosystem_daily
     description: >
       One row per day for the whole ecosystem, carrying the coverage the totals

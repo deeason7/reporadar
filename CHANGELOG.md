@@ -220,6 +220,37 @@ All notable changes to this project are documented here, per
   that could not have changed anything, because those hours' files were gone — and a check nobody can
   satisfy is worse than no check. A record claiming hours the lake does not hold is a real fault with
   its own tool, `reporadar verify`. Each check now owns exactly one comparison and the three compose.
+- A daily aggregate ranking repositories by how their participation moved from one day to the next,
+  and a dashboard for it. Movement is counted in **distinct accounts**, because the two obvious
+  alternatives were measured and both fail. Star events are too sparse per repository per day to rank
+  on: about 1,300 a day across the whole feed means most repositories have no star on most days, so a
+  daily ranking on that column sorts mostly ties. Not because the feed lacks stars — measured across
+  96 complete hours they are 0.033% of all events but 1.04% on repositories where five or more
+  accounts are active, because roughly two thirds of everything published goes to single-account
+  repositories with generated names. Event volume ranks automation instead:
+  on a measured day every one of the twelve busiest repositories by event count had exactly one
+  account behind it, the largest being 5,118 pushes from a single account, while the same day ranked
+  by distinct accounts returns established many-person projects. The two lists share no rows, so
+  distinct accounts is not a tidied-up event count — it selects a different population.
+
+  Each repository is compared against itself on the previous **calendar** day, and only where the
+  lake holds both days in full. Adjacency is joined on the date rather than taken from the preceding
+  row, because the preceding row is only yesterday when there are no gaps: against a lake missing
+  five days in the middle, the row-based spelling would present five days of accumulated movement as
+  one day's, with plausible numbers and ordered ranks and only the meaning wrong. Partial days are
+  excluded rather than scaled to twenty-four hours, since activity is not uniform across the day. A
+  repository absent on the previous day counts as zero rather than unknown, which is correct only
+  because that day is known to be complete.
+
+  Repositories qualify at five distinct accounts on either side, so declines are kept as well as
+  rises; the floor comes from the measured distribution, where 96% of repository-days have exactly
+  one account and the highest observed in a day is 59. Ranking is on absolute change, with the
+  proportional change reported but not sorted on, because counts that small make a ratio mostly
+  denominator. Ties break on a total order so a rebuild over unchanged data reproduces the same list.
+
+  Nothing in the model or the dashboard attaches a judgement to a rise. Whether movement is genuine
+  interest or manufactured is a question about account quality and coordination between accounts,
+  and neither is modelled here.
 
   `marts-status` exits `3` for stale and any other non-zero code for "the check did not run", so a
   wrapper cannot turn an unreachable database into a rebuild. Three rather than two because two is
