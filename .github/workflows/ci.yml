@@ -192,6 +192,168 @@ jobs:
       - name: Build the marts and run their tests
         run: uv run dbt build --project-dir dbt --profiles-dir dbt
 
+      # `marts-status` compares the hours in the lake against the coverage each
+      # mart row carries. Its unit tests use real directories for the lake and a
+      # double for the marts, so they pin the classification and say nothing
+      # about whether the one SQL query returns the columns it reads. This is
+      # where that half is proven, in the only place with real marts.
+      #
+      # The ledger is written to match the fixture too, and that is not
+      # redundant. Three instruments each own one comparison: `verify` checks the
+      # ledger against the files, `marts-status` checks the files against the
+      # marts, and the dashboard panel — a database connection, so it can reach
+      # neither the files nor anything else — checks the ledger against the marts.
+      # They compose, and the invariant worth pinning is that when `verify`
+      # passes, the panel and the command necessarily agree.
+      - name: Record the fixture hours in the ledger
+        run: |
+          uv run python - <<'EOF'
+          import asyncio, datetime, os
+          import asyncpg
+          from reporadar.ingest.ledger import CREATE_TABLE, RECORD_HOUR
+
+          HOURS = [
+              (datetime.date(2026, 7, 22), 21, 40),
+              (datetime.date(2026, 7, 22), 22, 30),
+              (datetime.date(2026, 7, 23), 3, 20),
+          ]
+
+          async def main() -> None:
+              conn = await asyncpg.connect(os.environ["REPORADAR_POSTGRES_DSN"])
+              await conn.execute(CREATE_TABLE)
+              now = datetime.datetime.now(datetime.UTC)
+              for day, hour, events in HOURS:
+                  await conn.execute(RECORD_HOUR, day, hour, "ingested", events, None, None, now)
+              await conn.close()
+
+          asyncio.run(main())
+          print("ledger seeded")
+          EOF
+
+      - name: The marts must read as current, and every instrument must agree
+        run: |
+          # Redirected and then printed, never piped. `cmd | tee` reports tee's
+          # exit status, so `|| status=$?` would capture tee's success and every
+          # assertion below would be about the wrong process — which is how this
+          # step first passed while measuring nothing.
+          status=0
+          uv run reporadar marts-status > /tmp/status.txt || status=$?
+          cat /tmp/status.txt
+          test "$status" -eq 0 || { echo "expected exit 0, got $status"; exit 1; }
+          grep -q "'days': 2" /tmp/status.txt || { echo "expected 2 days examined"; exit 1; }
+          grep -q "'stale': 0" /tmp/status.txt || { echo "expected nothing stale"; exit 1; }
+          grep -q "'surplus': 0" /tmp/status.txt || { echo "expected no surplus"; exit 1; }
+          uv run reporadar verify
+          uv run python .github/panel_hours_behind.py 0
+
+      # The control. Everything above passes over a database where the marts
+      # genuinely are current, which is the exact state in which a check that
+      # always says "current" is indistinguishable from a correct one. An hour
+      # written into the lake and never built from is the real failure this
+      # closes: the lake moved, nobody rebuilt, and every chart still renders.
+      #
+      # A partition file, and the ledger row that goes with it. Both, because a
+      # lake and a record that disagree is a different fault with its own tool.
+      - name: Negative control — an hour the marts never saw must read as stale
+        run: |
+          uv run python - <<'EOF'
+          import asyncio, datetime, os
+          import asyncpg, duckdb
+          from reporadar.ingest.ledger import RECORD_HOUR
+
+          out = "/tmp/lake-fixture/lake/dt=2026-07-23/hr=4"
+          os.makedirs(out, exist_ok=True)
+          duckdb.connect().execute(f"""
+              COPY (SELECT 'late-' || id AS id, type, actor, repo, org, payload, public,
+                           created_at + INTERVAL 1 HOUR AS created_at
+                    FROM read_parquet('/tmp/lake-fixture/lake/dt=2026-07-23/hr=3/events.parquet'))
+              TO '{out}/events.parquet' (FORMAT PARQUET)
+          """)
+
+          async def main() -> None:
+              conn = await asyncpg.connect(os.environ["REPORADAR_POSTGRES_DSN"])
+              await conn.execute(
+                  RECORD_HOUR, datetime.date(2026, 7, 23), 4, "ingested", 20, None, None,
+                  datetime.datetime.now(datetime.UTC),
+              )
+              await conn.close()
+
+          asyncio.run(main())
+          EOF
+          status=0
+          uv run reporadar marts-status > /tmp/stale.txt || status=$?
+          cat /tmp/stale.txt
+          # Pinned to the literal rather than read from the module, so that changing
+          # the constant has to change this line too. The value is load-bearing for
+          # the Makefile wrapper, and 2 specifically is wrong: it is the usage-error
+          # code and the runner's cannot-spawn code, both of which mean the check did
+          # not run.
+          test "$status" -eq 3 || { echo "expected the stale code 3, got $status"; exit 1; }
+          grep -qE "^STALE +2026-07-23" /tmp/stale.txt || { echo "the stale day was not named"; exit 1; }
+          grep -q "'hours_behind': 1" /tmp/stale.txt || { echo "wrong size of gap"; exit 1; }
+          uv run python .github/panel_hours_behind.py 1
+          echo "negative control fired: an unbuilt hour is visible to the check"
+
+      # The level trigger itself: stale is what makes it build, and an unchanged
+      # lake makes it do nothing. Without this the wrapper is three untested
+      # branches of shell around a command that is well tested on its own.
+      - name: The build must be triggered by the difference, and only by it
+        run: |
+          # No .env is written here, and that is the point: the Makefile sources
+          # one only if it exists, so this job runs on a checkout that has none —
+          # a fresh clone, exactly. Writing one would also have made this step
+          # overwrite a developer's real .env the moment anybody ran the job
+          # locally, which is a worse hazard than the one it solved.
+          make marts-converge
+          uv run reporadar marts-status
+          # Redirected, not piped, for the reason spelled out three steps above:
+          # a pipeline reports the last command's status, so a failing make here
+          # would be masked by tee succeeding.
+          make marts-converge > /tmp/again.txt
+          cat /tmp/again.txt
+          grep -q "nothing to build" /tmp/again.txt || {
+            echo "an unchanged lake still triggered a build"; exit 1; }
+          uv run python .github/panel_hours_behind.py 0
+
+      # The measurement that decided the denominator. On a working database the
+      # ledger claimed 35 hours across three days while the lake held three
+      # files, so a ledger-based check reported 32 hours behind and prescribed a
+      # build that could never have changed anything — a check nobody can
+      # satisfy, which is worse than no check because the first real staleness it
+      # buries is the one nobody looks at any more. An hour the record claims and
+      # the lake does not hold belongs to `verify`, and this pins that split.
+      - name: An hour the lake does not hold must not read as stale
+        run: |
+          uv run python - <<'EOF'
+          import asyncio, datetime, os
+          import asyncpg
+          from reporadar.ingest.ledger import RECORD_HOUR
+
+          async def main() -> None:
+              conn = await asyncpg.connect(os.environ["REPORADAR_POSTGRES_DSN"])
+              await conn.execute(
+                  RECORD_HOUR, datetime.date(2026, 7, 23), 9, "ingested", 999, None, None,
+                  datetime.datetime.now(datetime.UTC),
+              )
+              await conn.close()
+
+          asyncio.run(main())
+          EOF
+          status=0
+          uv run reporadar marts-status || status=$?
+          test "$status" -eq 0 || { echo "a claim with no file was read as stale (exit $status)"; exit 1; }
+          # And the other half of the same fact: this is a real fault, it belongs
+          # to verify, and verify must fail on it. A split where neither tool
+          # reports the problem is not a split, it is a hole.
+          if uv run reporadar verify; then
+            echo "verify passed over a claim with no file"; exit 1
+          fi
+          # The panel reads the ledger, so it necessarily disagrees here. Asserted
+          # rather than glossed: the agreement above holds while verify passes,
+          # and this is what that qualifier means.
+          uv run python .github/panel_hours_behind.py 1
+          echo "the split holds: the rebuildable gap is 0, the record is wrong, and verify says so"
+
       # The models ran and the tests passed — but tests that cannot fail prove
       # nothing about the data. This files an hour's events under the wrong hour,
       # which is the one thing `repo_daily` relies on not happening: it groups on
@@ -318,7 +480,20 @@ jobs:
               for m in re.finditer(r"^\s*uid:\s*(\S+)", f.read_text(), re.M):
                   uids.add(m.group(1))
 
-          FORBIDDEN = ("restricted.", "public.events", " events ")
+          # Two shapes, because the two names hide in different ways. A
+          # `restricted.` qualifier only ever appears in a reference, so a plain
+          # substring is exact. `events` is also an ordinary column of the hours
+          # record, so it is forbidden in table position only — matched on the
+          # keyword in front of it, not on the whitespace around it.
+          #
+          # It was matched on whitespace until this was measured, and that was
+          # wrong in both directions at once: `select * from events` has no
+          # trailing space and passed, while `and events > 0` on archive_hours was
+          # rejected. A rule whose answer depends on the punctuation after the
+          # word is not the rule anybody meant to write — and this one had no
+          # negative control, which is how it stayed wrong.
+          FORBIDDEN_TEXT = ("restricted.",)
+          FORBIDDEN_TABLE = re.compile(r"\b(?:from|join|into|update)\s+(?:public\s*\.\s*)?events\b")
           dashboards = sorted(pathlib.Path("grafana/dashboards").rglob("*.json"))
           if not dashboards:
               problems.append("no dashboards found — the check is looking in the wrong place")
@@ -337,11 +512,15 @@ jobs:
                               f"{f}: panel {panel.get('id')} points at datasource {uid!r}, "
                               f"which is not provisioned (have: {sorted(uids)})")
                       sql = (t.get("rawSql") or "").lower()
-                      for bad in FORBIDDEN:
-                          if bad.strip() and bad in sql:
+                      for bad in FORBIDDEN_TEXT:
+                          if bad in sql:
                               problems.append(
-                                  f"{f}: panel {panel.get('id')} queries {bad.strip()!r} — "
+                                  f"{f}: panel {panel.get('id')} queries {bad!r} — "
                                   f"the dashboard connection is not permitted to read it")
+                      if FORBIDDEN_TABLE.search(sql):
+                          problems.append(
+                              f"{f}: panel {panel.get('id')} reads the raw events table — "
+                              f"the dashboard connection is not permitted to read it")
 
           print(f"checked {len(prov)} provisioning files and {len(dashboards)} dashboards")
           if problems:
@@ -384,12 +563,16 @@ jobs:
                   for m in re.finditer(r"(?i)^\s*password:\s*(.+)$", text, re.M):
                       if not m.group(1).strip().startswith("${"):
                           found.append(f"{f}: literal credential")
+              raw_events = re.compile(r"\b(?:from|join|into|update)\s+(?:public\s*\.\s*)?events\b")
               for f in sorted(pathlib.Path("grafana/dashboards").rglob("*.json")):
                   doc = json.loads(f.read_text())
                   for panel in doc.get("panels", []):
                       for t in panel.get("targets", []):
-                          if "restricted." in (t.get("rawSql") or "").lower():
+                          sql = (t.get("rawSql") or "").lower()
+                          if "restricted." in sql:
                               found.append(f"{f}: panel {panel.get('id')} reads per-account rows")
+                          if raw_events.search(sql):
+                              found.append(f"{f}: panel {panel.get('id')} reads raw events")
               return found
 
           def mutate_ds(old, new):
@@ -425,6 +608,16 @@ jobs:
               dash.write_text(json.dumps(doc))
               ok = dash.read_bytes() != originals[dash]
               results.append(("per-account query", ok, len(check())))
+              dash.write_bytes(originals[dash])
+
+              # 4. a panel reading the raw event table. Spelled without a trailing
+              # space on purpose: this is the exact query the whitespace rule this
+              # replaced let through, and the reason that rule is gone.
+              doc = json.loads(dash.read_text())
+              doc["panels"][0]["targets"][0]["rawSql"] = "select * from events"
+              dash.write_text(json.dumps(doc))
+              ok = dash.read_bytes() != originals[dash]
+              results.append(("raw event query", ok, len(check())))
               dash.write_bytes(originals[dash])
 
               bad = 0

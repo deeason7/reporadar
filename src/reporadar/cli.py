@@ -30,6 +30,7 @@ from reporadar.ingest.sinks import HourlyNdjsonSink, TeeSink
 from reporadar.ingest.store import pg_connection, pg_store
 from reporadar.ingest.topics import provision_topics, require_topics
 from reporadar.ingest.verify import VerifyReport, verify_lake
+from reporadar.marts.freshness import STALE_EXIT_CODE, FreshnessReport, marts_freshness
 
 app = typer.Typer(help="RepoRadar — ecosystem intelligence tooling", no_args_is_help=True)
 
@@ -293,6 +294,40 @@ def verify(counts: bool = False) -> None:
             "backed by the file they claim."
         )
         raise typer.Exit(code=1)
+
+
+@app.command(name="marts-status")
+def marts_status() -> None:
+    """Report whether the published marts still reflect every hour the lake holds."""
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    settings = get_settings()
+
+    async def _run() -> FreshnessReport:
+        async with pg_connection(settings) as connection:
+            # No create_schema here, unlike verify and backfill. This reads the
+            # marts and the lake and never the ledger, and the one thing it does
+            # ask the database — whether the mart table exists — answers with a
+            # null rather than failing. A read-only command should not be issuing
+            # DDL to make itself work.
+            return await marts_freshness(connection, lake_dir=settings.lake_dir)
+
+    report = asyncio.run(_run())
+    for day in report.drift:
+        marker = "STALE  " if day.stale else "surplus"
+        typer.echo(f"{marker} {day.day}  {day.kind}: {day.detail}")
+    typer.echo(report.as_dict())
+    if not report.built:
+        typer.echo("note: the marts have never been built.")
+    if not report.ok:
+        # A distinct code, so a caller can tell "the marts need rebuilding" from
+        # "this check could not run". See STALE_EXIT_CODE.
+        typer.echo(
+            f"STALE: {len(report.stale_days)} day(s) behind by {report.hours_behind} "
+            "ingested hour(s). Rebuild with `make marts`."
+        )
+        raise typer.Exit(code=STALE_EXIT_CODE)
 
 
 @app.command()

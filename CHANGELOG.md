@@ -206,6 +206,25 @@ All notable changes to this project are documented here, per
   visibly exist. Continuous integration checks the same boundary from the other side, rejecting any
   panel whose SQL names those tables, and rejecting provisioning that carries a literal credential
   or a shell-style variable default, which Grafana does not expand.
+- `reporadar marts-status` and `make marts-converge`, which keep the aggregates level with the lake
+  the same way ingest keeps the lake level with the archive: not on a schedule, on a difference.
+  Nothing records when a build last ran — each ecosystem row already carries how many hours it was
+  computed from, and comparing that against the lake answers a stronger question than a timestamp
+  could, since a build that finished a minute ago against a lake that has moved since is recent and
+  stale at the same time. Over an unchanged lake the check is a directory walk and one query, and no
+  build runs. The dashboard gained a panel for the same gap, so a reader sees that the charts are
+  behind without running anything.
+
+  The comparison is against the lake's files rather than the record of ingested hours. Measured on a
+  working database, the record-based version reported thirty-two hours behind and prescribed a build
+  that could not have changed anything, because those hours' files were gone — and a check nobody can
+  satisfy is worse than no check. A record claiming hours the lake does not hold is a real fault with
+  its own tool, `reporadar verify`. Each check now owns exactly one comparison and the three compose.
+
+  `marts-status` exits `3` for stale and any other non-zero code for "the check did not run", so a
+  wrapper cannot turn an unreachable database into a rebuild. Three rather than two because two is
+  already the usage-error code and the task runner's "could not spawn" code, both of which mean the
+  check did not run — branching on 2 was watched rebuilding the published aggregates.
 
 ### Changed
 - The local stack no longer publishes its ports to every network interface. Kafka, TimescaleDB and

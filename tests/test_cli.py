@@ -18,6 +18,7 @@ from reporadar.ingest.ledger import HourStatus
 from reporadar.ingest.metrics import ArchiveCounters, ConsumeCounters, PollCounters
 from reporadar.ingest.sinks import EventSink
 from reporadar.ingest.verify import Finding, Problem, VerifyReport
+from reporadar.marts.freshness import STALE_EXIT_CODE, DayDrift, FreshnessReport
 
 runner = CliRunner()
 
@@ -767,3 +768,111 @@ def test_verify_says_when_it_could_only_check_presence(
     assert result.exit_code == 0
     assert "presence only" in result.output
     assert "1 hour(s) carry no recorded size" in result.output
+
+
+def test_marts_status_exits_zero_when_every_lake_day_is_reflected(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    calls: dict[str, object] = {}
+    order: list[str] = []
+    connection = object()
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection(order, connection))
+
+    async def fake_freshness(connection_arg: object, *, lake_dir: Path) -> FreshnessReport:
+        calls.update(connection=connection_arg, lake_dir=lake_dir)
+        order.append("freshness")
+        return FreshnessReport(days=[DayDrift(date(2026, 7, 22), 24, 24)])
+
+    monkeypatch.setattr(cli, "marts_freshness", fake_freshness)
+
+    result = runner.invoke(cli.app, ["marts-status"])
+
+    assert result.exit_code == 0
+    assert calls["connection"] is connection
+    assert calls["lake_dir"] == pinned_cli_settings.lake_dir
+    # No create_schema, unlike verify and backfill: this reads the marts and the
+    # lake and never the ledger, so a read-only command has no reason to issue
+    # DDL. Asserting the sequence is what keeps that from drifting back.
+    assert order == ["open connection", "freshness", "close connection"]
+    assert "'stale': 0" in result.output
+
+
+def test_marts_status_exits_with_the_stale_code_not_a_generic_failure(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # The contract the Makefile wrapper is built on, and the only reason a second
+    # exit code exists. A wrapper that rebuilt on any non-zero exit would rebuild
+    # because the database was unreachable — turning "the check could not run"
+    # into "the marts were stale and are now fresh". Pinning the number here is
+    # what keeps that distinction from being a comment.
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection([], object()))
+
+    async def fake_freshness(connection_arg: object, *, lake_dir: Path) -> FreshnessReport:
+        return FreshnessReport(days=[DayDrift(date(2026, 7, 22), 24, 20)])
+
+    monkeypatch.setattr(cli, "marts_freshness", fake_freshness)
+
+    result = runner.invoke(cli.app, ["marts-status"])
+
+    assert result.exit_code == STALE_EXIT_CODE
+    assert result.exit_code != 1  # a crash's code, which must not mean "rebuild"
+    assert "STALE   2026-07-22" in result.output
+    assert "behind by 4 ingested hour(s)" in result.output
+
+
+def test_stale_exit_code_avoids_the_codes_that_mean_it_did_not_run() -> None:
+    # Every other test here compares against the constant, so all of them keep
+    # passing if the constant changes. That makes them silent about the one
+    # property of it that the Makefile wrapper actually depends on: the value has
+    # to be reachable ONLY by this command deciding the marts are stale.
+    #
+    # 0, 1 and 2 are all claimed. 0 is success. 1 is a crash. 2 is the usage-error
+    # code the command-line framework returns for a misspelled flag -- before this
+    # module runs at all -- and it is also what the runner returns when it cannot
+    # spawn the command. Both were measured, and a wrapper branching on 2 was
+    # watched rebuilding the published aggregates in both cases: the two states
+    # that most clearly mean "the check did not run" were being read as "stale".
+    assert STALE_EXIT_CODE not in (0, 1, 2)
+
+    # And the framework really does use 2, so this is not a precaution against a
+    # hypothetical. If a future version stops doing so, this fails and the comment
+    # above stops being true at the same moment.
+    usage_error = runner.invoke(cli.app, ["marts-status", "--no-such-flag"])
+    assert usage_error.exit_code == 2
+    assert usage_error.exit_code != STALE_EXIT_CODE
+
+
+def test_marts_status_prints_surplus_without_failing(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # The asymmetry at the command's edge: printed so it is visible, and exit 0
+    # because nothing published is wrong because of it.
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection([], object()))
+
+    async def fake_freshness(connection_arg: object, *, lake_dir: Path) -> FreshnessReport:
+        return FreshnessReport(days=[DayDrift(date(2026, 7, 22), 22, 24)])
+
+    monkeypatch.setattr(cli, "marts_freshness", fake_freshness)
+
+    result = runner.invoke(cli.app, ["marts-status"])
+
+    assert result.exit_code == 0
+    assert "surplus 2026-07-22" in result.output
+
+
+def test_marts_status_says_when_the_marts_have_never_been_built(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # "Every day is behind" and "there are no marts" produce the same numbers and
+    # want different actions, so the second one says so in words.
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection([], object()))
+
+    async def fake_freshness(connection_arg: object, *, lake_dir: Path) -> FreshnessReport:
+        return FreshnessReport(built=False, days=[DayDrift(date(2026, 7, 22), 24, None)])
+
+    monkeypatch.setattr(cli, "marts_freshness", fake_freshness)
+
+    result = runner.invoke(cli.app, ["marts-status"])
+
+    assert result.exit_code == STALE_EXIT_CODE
+    assert "never been built" in result.output

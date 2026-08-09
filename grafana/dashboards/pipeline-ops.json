@@ -101,11 +101,37 @@
       ]
     },
     {
+      "id": 8,
+      "type": "stat",
+      "title": "Hours the record claims that the aggregates below do not cover",
+      "description": "Read this before anything under it. The aggregates are built by a command somebody runs; ingest converges on its own, so the two drift apart silently and every panel below keeps rendering — with numbers quietly smaller than the truth. Zero means what is charted covers every hour the record claims. Computed against the coverage each aggregate row carries, so it needs no note of when a build last ran: a build that finished a minute ago against a lake that has moved since is recent and stale at the same time. Anything above zero is closed one of two ways, and this panel cannot tell you which, because a database connection cannot see the files. If `reporadar verify` passes, it is a build that is owed, and `make marts-converge` runs it. If `verify` fails, the record is claiming hours the lake does not hold, no build can supply them, and `reporadar marts-status` is the one that reports the gap a rebuild would actually close.",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 4 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h",
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 24 } ] },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select coalesce(sum(lake.hours - coalesce(built.hours_present, 0)), 0) as \"hours not yet built from\" from (select day, count(*) as hours from archive_hours where status = 'ingested' and events > 0 group by day) as lake left join marts.ecosystem_daily as built on built.day = lake.day where built.hours_present is null or built.hours_present < lake.hours",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" }
+        }
+      ]
+    },
+    {
       "id": 5,
       "type": "timeseries",
       "title": "Coverage — hours held per day, out of 24",
       "description": "The panel to read before any of the others. A daily total computed from seven hours and one computed from twenty-four look identical in every chart except this one, so a dip here explains a dip everywhere else. It is read from the aggregates, which carry their own coverage rather than having it attached afterwards.",
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 4 },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 7 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" },
       "fieldConfig": {
         "defaults": {
@@ -133,7 +159,7 @@
       "type": "timeseries",
       "title": "Events, repositories and accounts per day",
       "description": "Volume at the ecosystem grain. Compare against the coverage panel before reading a change as a change in GitHub rather than a change in how much of the day was ingested. Accounts are counted, never listed — per-account rows live in a schema this connection cannot read.",
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 4 },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 7 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" },
       "fieldConfig": {
         "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "always" }, "unit": "short" },
@@ -155,7 +181,7 @@
       "type": "table",
       "title": "Most recent hours",
       "description": "The record itself, newest first — what the aggregates above are derived from. An hour appears here once it has been attempted; its status is the current one, because an hour published late is re-recorded rather than left at its first answer.",
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 13 },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 16 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "reporadar-postgres" },
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": { "showHeader": true },

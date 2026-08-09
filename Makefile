@@ -1,4 +1,5 @@
-.PHONY: setup lint fmt test up down logs provision up-app down-app logs-app image marts grafana-grants
+.PHONY: setup lint fmt test up down logs provision up-app down-app logs-app image marts \
+        marts-status marts-converge grafana-grants
 
 # One-time dev setup: environment + hooks
 setup:
@@ -47,17 +48,61 @@ logs-app:
 image:
 	docker build -t reporadar:dev .
 
+# Settings come from .env, the same file every service reads, so there is one
+# place where the database address lives. Sourced only if it is there, the way
+# compose marks its env_file optional and for the same reason: a fresh clone has
+# no .env yet, and CI runs exactly that. A setting that is genuinely missing then
+# produces the tool's own named error rather than the shell's
+# "No such file or directory", which names neither the setting nor the fix.
+DOTENV = set -a; [ -f .env ] && . ./.env; set +a
+
 # Build the marts and run their tests. Reads the Parquet lake in place and writes
 # tables into Postgres, so the database has to be up (`make up`).
 #
-# The settings come from .env, the same file every service reads, so there is one
-# place where the database address lives. `build` rather than `run`: a model and
-# its tests are one unit, and a mart that fails its tests should not be left
-# sitting in the schema the dashboard reads.
+# `build` rather than `run`: a model and its tests are one unit, and a mart that
+# fails its tests should not be left sitting in the schema the dashboard reads.
 marts:
-	set -a; . ./.env; set +a; \
+	$(DOTENV); \
 	REPORADAR_DATA_DIR="$${REPORADAR_DATA_DIR:-data}" \
 	uv run dbt build --project-dir dbt --profiles-dir dbt
+
+# Is what the dashboard is showing built from every hour the lake holds?
+marts-status:
+	$(DOTENV); \
+	uv run reporadar marts-status
+
+# Build the marts, but only if the lake has moved since they were last built.
+#
+# The same treatment the ingest loop already gets: not a schedule, a difference.
+# Nothing records when a build last ran — the comparison is between the hours the
+# lake holds and the hours each mart row says it was computed from, so the answer
+# stays true no matter who ran what, or when, or whether it finished. That is also
+# why this is safe to run repeatedly: over an unchanged lake it is a directory
+# walk, one small query, and no build at all.
+#
+# Three outcomes, not two, and the difference is the point. Exit 2 means stale
+# and is the only code that triggers a build; any other non-zero means the check
+# itself did not run, and rebuilding on that would turn an unreachable database
+# into a rebuild whose own failure becomes the answer.
+#
+# The code is 3 rather than 2, and that is not cosmetic. Two is the conventional
+# usage-error code, so a misspelled flag exits 2 from the command-line framework
+# before the check runs; and the runner exits 2 when it cannot spawn the command
+# at all. Branching on 2 was watched rebuilding the published aggregates in both
+# cases -- the two states that most clearly mean "this did not run" were the two
+# being read as "it is stale". Codes carrying application meaning start at 3,
+# because 0, 1 and 2 are already spoken for.
+marts-converge:
+	@$(DOTENV); \
+	status=0; uv run reporadar marts-status || status=$$?; \
+	if [ "$$status" -eq 0 ]; then \
+		echo "marts are current with the lake; nothing to build"; \
+	elif [ "$$status" -eq 3 ]; then \
+		$(MAKE) marts; \
+	else \
+		echo "marts-status did not complete (exit $$status); not rebuilding"; \
+		exit "$$status"; \
+	fi
 
 # Create (or update) the role the dashboard connects as, and grant it exactly the
 # published aggregates and the hours record.
@@ -70,7 +115,7 @@ marts:
 # Piped through stdin rather than passed as a path, because the file lives in the
 # working tree and psql runs inside the container.
 grafana-grants:
-	set -a; . ./.env; set +a; \
+	$(DOTENV); \
 	docker compose exec -T timescaledb psql \
 		-U "$${POSTGRES_USER:-reporadar}" -d "$${POSTGRES_DB:-reporadar}" \
 		-v grafana_password="$${GRAFANA_DB_PASSWORD:?set GRAFANA_DB_PASSWORD in .env}" \

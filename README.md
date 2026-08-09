@@ -189,6 +189,8 @@ results into Postgres:
 ```bash
 make up                   # the database has to be running
 make marts                # build the models and run their tests
+make marts-converge       # build them only if the lake has moved since last time
+make marts-status         # just say whether they are current, and change nothing
 ```
 
 The split is deliberate and it is the part worth understanding. **The events are in the lake,
@@ -209,6 +211,40 @@ an empty repository object — three in the 5,090,496 events measured on 2026-07
 fork events. Those cannot belong to a per-repository row, so they are excluded from it, and the
 tests warn every time one appears instead of passing silently. The build only fails if the count
 jumps far enough to mean the envelope changed rather than that the publisher did something rare.
+
+### Keeping the aggregates level with the lake
+
+The ingest converges on its own; the aggregates are built by a command. Left at that the two drift
+apart in silence — the charts keep rendering, and the numbers are quietly smaller than the truth.
+`make marts-converge` closes it the same way the ingest loop works: not on a schedule, on a
+difference. It asks whether the aggregates cover every hour the lake holds, builds only if they do
+not, and over an unchanged lake does a directory walk and one small query and stops.
+
+**Nothing records when a build last ran, and that is on purpose.** Each ecosystem row already
+carries how many hours it was computed from, so comparing that against the lake answers the
+question directly — and it answers a stronger one than a timestamp could, because a build that
+finished a minute ago against a lake that has moved since is recent and stale at the same time.
+
+The comparison is against the lake's **files**, not the record of ingested hours, and that
+distinction was bought the hard way. The obvious version compares against the record; run against a
+working database it reported thirty-two hours behind and prescribed a build that could not have
+changed anything, because those hours' files were long gone. A build reads the lake, so only the
+lake can say what a build would change. *A check nobody can satisfy is worse than no check* — the
+first real staleness it buries is the one nobody looks at any more. A record claiming hours the
+lake does not hold is a genuine fault with its own tool: that is what `reporadar verify` reports.
+
+So three checks each own exactly one comparison, and they compose: `verify` checks the record
+against the files, `marts-status` checks the files against the aggregates, and the dashboard panel —
+being a database connection, and so unable to see files at all — checks the record against the
+aggregates. When `verify` passes, the last two necessarily agree.
+
+`marts-status` exits `3` when the aggregates are behind, and any other non-zero code means the check
+itself did not run. Two codes rather than one because something acts on the answer: a wrapper that
+rebuilt on *any* failure would rebuild because the database was unreachable, and then report that
+rebuild's own failure as the verdict. Three rather than two because two is already the conventional
+usage-error code and the task runner's "could not spawn" code — both of which mean the check did not
+run, the opposite of what the wrapper does with the stale code. Codes carrying application meaning
+start at 3.
 
 ### The daily grains, and where each one lives
 
@@ -248,9 +284,10 @@ Then open Grafana on `GRAFANA_PORT` (`3001` by default, published on loopback on
 
 The dashboard answers the operational question rather than the product one: how much of the
 published archive this instance actually holds. Hours ingested and outstanding, how stale the newest
-ingested hour is, and — the panel to read before any of the others — **how many of each day's
-twenty-four hours the aggregates were computed from**. A daily total from seven hours and one from a
-full day look identical in every chart except that one.
+ingested hour is, **how many of each day's twenty-four hours the aggregates were computed from** — a
+daily total from seven hours and one from a full day look identical in every chart except that one —
+and, across the top, **how many claimed hours the aggregates do not cover at all**, so a reader can
+see that the charts are behind the lake without having to run anything.
 
 **The dashboard connects as its own database role, not the application's.** It may read the
 published aggregates and the record of ingested hours. It may not read the per-account table, and it
