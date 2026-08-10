@@ -52,7 +52,7 @@ DEFAULT_SCAN_INTERVAL_S: Final = 900.0
 DEFAULT_LOOKBACK_DAYS: Final = 3
 
 
-class _Serialised:
+class SerialisedConnection:
     """One connection, safe to share across concurrent hours.
 
     Every driver worth using refuses two overlapping operations on a single
@@ -120,7 +120,7 @@ async def converge_once(
         len(due),
         concurrency,
     )
-    shared = _Serialised(connection)
+    shared = SerialisedConnection(connection)
     limit = asyncio.Semaphore(concurrency)
 
     async def one(day: date, hour: int) -> HourReport:

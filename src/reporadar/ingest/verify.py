@@ -85,6 +85,28 @@ class Problem(StrEnum):
 #: which findings are serious.
 UNBACKED: Final[frozenset[Problem]] = frozenset({Problem.ABSENT, Problem.SIZE, Problem.COUNT})
 
+#: The exit code that means "the record claims hours the lake does not hold", as
+#: opposed to any other non-zero exit, which means this check did not finish.
+#:
+#: It was **1** until something began to act on the answer. That was safe only
+#: while nothing branched on it: 1 is also what an unhandled exception exits with,
+#: so a caller could not tell "the lake disagrees with the record" from "this
+#: command crashed" — and the two call for opposite responses. A repair that
+#: treats a crash as a finding will delete and re-fetch on the strength of a
+#: traceback.
+#:
+#: Three, matching the marts check, and for the same measured reason: 0, 1 and 2
+#: are claimed by convention (success, error, usage), so a code carrying
+#: application meaning starts at 3. The usage code is not theoretical here — the
+#: command-line framework returns 2 for an unknown flag, before this module runs
+#: at all.
+#:
+#: Fixed *before* the first caller that branches on it was written, which is the
+#: only cheap moment. The identical collision was found in the marts check after
+#: its wrapper existed, and it had to be watched rebuilding published aggregates
+#: on a misspelled flag before it was believed.
+UNBACKED_EXIT_CODE: Final = 3
+
 
 @dataclass(frozen=True)
 class Finding:

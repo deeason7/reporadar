@@ -95,6 +95,7 @@ reporadar consume                                            # stream → valida
 reporadar archive-serve                                      # keep the columnar store converged
 reporadar backfill 2026-07-21 2026-07-22                     # ingest one explicit range of days
 reporadar verify                                             # does the store match its record?
+reporadar repair-lake --dry-run                              # and if it does not, fix it
 reporadar provision                                          # create the Kafka topics
 reporadar capture-rate <archive.json.gz> <live.ndjson>       # compare a sample to an archive hour
 ```
@@ -122,12 +123,37 @@ Both also remove each hour's compressed source once the record of it is written,
 bytes reclaimed: the columnar copy is what the record points at, while the source is a cache of a
 file the publisher still serves, and keeping both costs two and a half times the disk. Pass
 `--keep-source` when the raw hour is the thing you want to look at.
-`verify` compares the hours record against the columnar store. It exits non-zero when the record
+`verify` compares the hours record against the columnar store. It exits `3` when the record
 claims an hour that is not on disk — the failure that matters, because nothing revisits a settled
 hour, so such a gap is permanent and every coverage number reports it as complete. A file that no
 row claims is reported without failing: it misstates nothing, and the next scan converts that hour
 again. The default check is one filesystem call per recorded hour and compares the stored size as
 well as presence; `--counts` also compares event counts, which reads the whole store in one query.
+
+`repair-lake` is what acts on that. It removes the claims `verify` proved untrue and fetches those
+hours again, so the record is written by a real download rather than edited. `--dry-run` reports what
+it would do and changes nothing.
+
+**It prints what each removed row claimed beside what the fetch actually found, and that comparison
+is the reason it exists.** Repairing thirty-two hours by hand, thirty-one reproduced their recorded
+counts exactly — and that agreement is the only thing that made the one hour which did not, recorded
+as 100 events and holding 165,892, legible as a bad row rather than as noise. A repair that quietly
+fixed would have destroyed the evidence along with the fault.
+
+It removes rows rather than writing over them, which is not squeamishness about deletion. The record
+refuses to move an hour off success — the guard that stops a failed fetch erasing a real ingest — so
+writing over would correct an hour that comes back and silently leave the false claim standing for
+one that does not. Clearing it first is what lets any outcome be recorded honestly, including "the
+publisher does not have this hour". It fetches one hour at a time by default, because the publisher
+dropped thirteen connections inside a second at three.
+
+**Re-running the ingest does not fix this, and that was measured rather than assumed.** The
+convergence loop asks the record which hours are unsettled, and an hour recorded as ingested is
+settled whether or not its file exists — so the hours needing repair are exactly the ones it skips. A
+range covering thirty-two broken hours reported forty-one due, forty-one ingested, nothing
+outstanding, and the same thirty-two failures before and after. The loop is left that way on purpose:
+removing a partition directory is a supported way to reclaim disk, and a loop that checked the files
+would re-download those hours for ever, undoing a deliberate act.
 `capture-rate` compares a live sample against one archive hour. It reports the counts and
 refuses to return a ratio when the sample holds events that the archive hour does not — which, on
 the hours measured so far, is what happens, and is why coverage is estimated from the live feed

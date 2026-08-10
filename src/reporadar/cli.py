@@ -24,12 +24,18 @@ from reporadar.ingest.kafka import kafka_dead_letter_sink, kafka_sink, kafka_sou
 from reporadar.ingest.ledger import create_schema
 from reporadar.ingest.metrics import ArchiveCounters, ConsumeCounters, PollCounters
 from reporadar.ingest.poller import collect_sample
+from reporadar.ingest.repair import (
+    DEFAULT_REPAIR_CONCURRENCY,
+    INCOMPLETE_EXIT_CODE,
+    RepairReport,
+    repair_unbacked,
+)
 from reporadar.ingest.service import poll_stream
 from reporadar.ingest.signals import stop_on_signals
 from reporadar.ingest.sinks import HourlyNdjsonSink, TeeSink
 from reporadar.ingest.store import pg_connection, pg_store
 from reporadar.ingest.topics import provision_topics, require_topics
-from reporadar.ingest.verify import VerifyReport, verify_lake
+from reporadar.ingest.verify import UNBACKED_EXIT_CODE, VerifyReport, verify_lake
 from reporadar.marts.freshness import STALE_EXIT_CODE, FreshnessReport, marts_freshness
 
 app = typer.Typer(help="RepoRadar — ecosystem intelligence tooling", no_args_is_help=True)
@@ -291,9 +297,84 @@ def verify(counts: bool = False) -> None:
         # that lies, and nothing revisits a settled hour to discover it.
         typer.echo(
             f"FAILED: {len(report.unbacked)} of {report.claimed} recorded hour(s) are not "
-            "backed by the file they claim."
+            "backed by the file they claim. Repair with `reporadar repair-lake`."
         )
-        raise typer.Exit(code=1)
+        # A distinct code, so a caller can tell this from "the check crashed".
+        # See UNBACKED_EXIT_CODE.
+        raise typer.Exit(code=UNBACKED_EXIT_CODE)
+
+
+@app.command(name="repair-lake")
+def repair_lake(
+    dry_run: bool = False,
+    counts: bool = False,
+    concurrency: int = DEFAULT_REPAIR_CONCURRENCY,
+    keep_source: bool = True,
+) -> None:
+    """Re-derive the record for hours it claims that the columnar store does not hold.
+
+    Destructive by design: it removes the claims a check has proven untrue, then
+    fetches those hours again so the record is written by a real download. Use
+    --dry-run to see what it would do.
+    """
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    settings = get_settings()
+
+    async def _run() -> RepairReport:
+        async with pg_connection(settings) as connection:
+            # Ensured rather than assumed, matching verify: repairing a database
+            # that was never ingested into should report "nothing to repair"
+            # instead of failing on a table that does not exist.
+            await create_schema(connection)
+            return await repair_unbacked(
+                connection,
+                lake_dir=settings.lake_dir,
+                archive_dir=settings.archive_dir,
+                # One instant for the whole pass, for the same reason the backfill
+                # takes one: every hour is judged closed-or-not against the same
+                # clock rather than against whenever its turn came round.
+                now=datetime.now(UTC),
+                concurrency=concurrency,
+                dry_run=dry_run,
+                check_counts=counts,
+                keep_source=keep_source,
+            )
+
+    report = asyncio.run(_run())
+    for item in report.reconciliations:
+        typer.echo(str(item))
+    typer.echo(report.as_dict())
+
+    if not report.unbacked:
+        typer.echo("nothing to repair; every recorded hour is backed by its file")
+        return
+    if report.dry_run:
+        typer.echo(
+            f"DRY RUN: {len(report.unbacked)} hour(s) would have their record removed and "
+            "be fetched again. Nothing was changed."
+        )
+        raise typer.Exit(code=INCOMPLETE_EXIT_CODE)
+
+    if report.disagreed:
+        # Printed separately and above the verdict, because it is the finding
+        # rather than the failure: those hours are now correct, and what is worth
+        # a human's attention is that the record had been wrong about them by a
+        # specific amount.
+        typer.echo(
+            f"NOTE: {len(report.disagreed)} repaired hour(s) hold a different number of "
+            "events than the removed record claimed. The counts above are what the "
+            "publisher actually serves; the claims were untrue."
+        )
+    if not report.ok:
+        typer.echo(
+            f"INCOMPLETE: {len(report.unrecovered)} hour(s) were not recovered and "
+            f"{len(report.unclearable)} could not be cleared. Re-run to continue; hours "
+            "already repaired will not be fetched again."
+        )
+        raise typer.Exit(code=INCOMPLETE_EXIT_CODE)
+    typer.echo(f"repaired {len(report.recovered)} hour(s); `reporadar verify` should now pass.")
 
 
 @app.command(name="marts-status")

@@ -256,8 +256,37 @@ All notable changes to this project are documented here, per
   wrapper cannot turn an unreachable database into a rebuild. Three rather than two because two is
   already the usage-error code and the task runner's "could not spawn" code, both of which mean the
   check did not run — branching on 2 was watched rebuilding the published aggregates.
+- `repair-lake`, which acts on what `verify` finds. Until now the record could be checked against the
+  columnar store and nothing could fix a disagreement: re-running the ingest does not, and that was
+  measured rather than assumed. The convergence loop asks the record which hours are unsettled, and an
+  hour recorded as ingested is settled whether or not its file exists, so the hours needing repair are
+  exactly the ones it skips — a range covering thirty-two broken hours reported forty-one due,
+  forty-one ingested, nothing outstanding, and the same thirty-two failures before and after.
+
+  The loop keeps that behaviour deliberately. Removing a partition directory is a supported way to
+  reclaim disk, and a loop that checked the files would re-download those hours for ever, undoing a
+  deliberate act. So the repair is a separate command somebody runs, with `--dry-run` to rehearse it.
+
+  It prints what each removed row claimed beside what the fetch actually found, and that comparison is
+  why it exists rather than being a convenience. Repairing thirty-two hours by hand, thirty-one
+  reproduced their recorded counts exactly, and that agreement is the only thing that made the one
+  hour which did not — recorded as 100 events and holding 165,892 — legible as a bad row rather than
+  as noise. A repair that quietly fixed would have destroyed the evidence along with the fault.
+
+  Rows are removed rather than written over. The record refuses to move an hour off success, which is
+  what stops a failed fetch erasing a real ingest, so writing over would correct an hour that comes
+  back and silently leave the false claim standing for one that does not. Clearing it first is what
+  lets any outcome be recorded honestly, including that the publisher does not have the hour. Only
+  claimed successes can be cleared, enforced in the statement itself, so an hour deliberately settled
+  as missing or held for triage cannot be erased by a mistyped argument. One hour is fetched at a time
+  by default, because the publisher dropped thirteen connections inside a second at three.
 
 ### Changed
+- `verify` exits `3` rather than `1` when the record claims hours the store does not hold. It was `1`
+  while nothing acted on the answer, and `1` is also what an unhandled exception exits with, so a
+  caller could not tell a finding from a crash — and a repair that treated a crash as a finding would
+  delete and re-fetch on the strength of a traceback. Changed before the first caller that branches on
+  it was written, which is the only cheap moment to change an exit code.
 - The local stack no longer publishes its ports to every network interface. Kafka, TimescaleDB and
   Grafana bind to `127.0.0.1`, so they are reachable from the machine running them and from nowhere
   else. None of the three authenticates a client — the broker's listeners are `PLAINTEXT` — so on any

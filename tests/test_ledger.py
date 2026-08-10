@@ -18,10 +18,12 @@ import pytest
 
 from reporadar.ingest.ledger import (
     CREATE_TABLE,
+    FORGET_INGESTED_HOURS,
     TERMINAL,
     HourRecord,
     HourStatus,
     create_schema,
+    forget_ingested_hours,
     ingested_hours,
     pending_hours,
     record_hour,
@@ -169,6 +171,38 @@ def test_the_table_refuses_a_counted_success_with_no_count_in_sql_too() -> None:
     assert "CHECK (hour BETWEEN 0 AND 23)" in CREATE_TABLE
 
 
+async def test_forgetting_no_hours_asks_the_database_nothing() -> None:
+    # The array form would otherwise send a statement to the server to be told
+    # that nothing matched — and this is the one query here that deletes, so it
+    # should not be issued speculatively.
+    connection = FakeConnection()
+
+    assert await forget_ingested_hours(connection, []) == []
+    assert connection.fetched == []
+
+
+async def test_forgetting_hours_returns_what_the_database_says_it_removed() -> None:
+    # Not what was asked for. A destructive statement reports back the rows it
+    # actually took, and the caller depends on the difference: an hour it asked to
+    # clear and did not get must never be re-fetched.
+    connection = FakeConnection([[DAY, 5]])
+
+    removed = await forget_ingested_hours(connection, [(DAY, 5), (DAY, 6)])
+
+    assert removed == [(DAY, 5)]
+    query, args = connection.fetched[0]
+    assert "DELETE FROM archive_hours" in query
+    assert (list(args[0]), list(args[1])) == ([DAY, DAY], [5, 6])
+
+
+def test_the_delete_refuses_anything_that_is_not_a_claimed_success() -> None:
+    # In the SQL, so the restriction holds however the caller was built. A
+    # `missing` row is the loop's decision to stop asking and a `failed` row is a
+    # triage note; erasing either would silently re-queue settled work.
+    assert "WHERE status = 'ingested'" in FORGET_INGESTED_HOURS
+    assert "RETURNING day, hour" in FORGET_INGESTED_HOURS
+
+
 # --- against a real database -------------------------------------------------
 #
 # Opt-in, because CI has no server. A double proves the module calls what it means
@@ -273,5 +307,49 @@ async def test_the_ledger_round_trips_against_a_real_database() -> None:
                 DAY,
                 NOW,
             )
+
+        # --- why a repair has to delete, rather than write over ---------------
+        #
+        # This is the reasoning the repair command rests on, and it is only
+        # demonstrable against a server, because it lives in the upsert's WHERE
+        # clause. Hour 5 is a claimed success. Suppose its file is gone and a
+        # repair simply re-ingests it:
+        #
+        # *If the hour comes back*, the upsert fires and the row is re-derived —
+        # so a delete looks unnecessary.
+        await record_hour(
+            connection, HourRecord(DAY, 5, HourStatus.INGESTED, events=222, bytes=22), now=NOW
+        )
+        row = await connection.fetchrow(
+            "SELECT status, events FROM archive_hours WHERE day = $1 AND hour = 5", DAY
+        )
+        assert (row["status"], row["events"]) == ("ingested", 222)
+
+        # *If it does not come back*, the guard refuses the write, and the false
+        # claim survives untouched — repaired in appearance only. That guard is
+        # correct: it is what stops a transient fetch failure erasing a real
+        # ingest. Which is exactly why the repair clears the row first instead of
+        # relying on the re-ingest to correct it.
+        await record_hour(
+            connection, HourRecord(DAY, 5, HourStatus.MISSING, detail="gone"), now=NOW
+        )
+        row = await connection.fetchrow(
+            "SELECT status, events FROM archive_hours WHERE day = $1 AND hour = 5", DAY
+        )
+        assert (row["status"], row["events"]) == ("ingested", 222)
+
+        # After the delete, any outcome can be recorded truthfully.
+        removed = await forget_ingested_hours(connection, [(DAY, 5), (DAY, 6), (DAY, 7)])
+        # Only the ingested hour: the guard is in the SQL, so the missing and
+        # failed rows are refused however the caller asks.
+        assert removed == [(DAY, 5)]
+        assert [(r.day, r.hour) for r in await ingested_hours(connection)] == [(DAY, 8)]
+        await record_hour(
+            connection, HourRecord(DAY, 5, HourStatus.MISSING, detail="gone"), now=NOW
+        )
+        row = await connection.fetchrow(
+            "SELECT status, events FROM archive_hours WHERE day = $1 AND hour = 5", DAY
+        )
+        assert (row["status"], row["events"]) == ("missing", None)
     finally:
         await connection.close()

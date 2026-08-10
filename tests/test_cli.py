@@ -16,8 +16,13 @@ from reporadar.config import Settings
 from reporadar.github.events import RawEvent
 from reporadar.ingest.ledger import HourStatus
 from reporadar.ingest.metrics import ArchiveCounters, ConsumeCounters, PollCounters
+from reporadar.ingest.repair import (
+    INCOMPLETE_EXIT_CODE,
+    Reconciliation,
+    RepairReport,
+)
 from reporadar.ingest.sinks import EventSink
-from reporadar.ingest.verify import Finding, Problem, VerifyReport
+from reporadar.ingest.verify import UNBACKED_EXIT_CODE, Finding, Problem, VerifyReport
 from reporadar.marts.freshness import STALE_EXIT_CODE, DayDrift, FreshnessReport
 
 runner = CliRunner()
@@ -703,10 +708,32 @@ def test_verify_exits_nonzero_when_a_recorded_hour_is_not_backed(
 
     result = runner.invoke(cli.app, ["verify", "--counts"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == UNBACKED_EXIT_CODE
     assert "UNBACKED" in result.output
     assert "absent" in result.output
     assert "1 of 2 recorded hour(s)" in result.output
+    # The finding is only half a report while nothing acts on it.
+    assert "repair-lake" in result.output
+
+
+def test_the_unbacked_exit_code_avoids_the_codes_that_mean_it_did_not_run() -> None:
+    # This was 1 until something began to branch on it, and 1 is also what an
+    # unhandled exception exits with -- so a caller could not tell "the record
+    # claims hours the lake does not hold" from "this command crashed", and those
+    # two call for opposite responses. A repair that treated a crash as a finding
+    # would delete and re-fetch on the strength of a traceback.
+    #
+    # Fixed before the first caller that branches on it existed, which is the only
+    # cheap moment. The identical collision in the marts check was found after its
+    # wrapper was written, and had to be watched rebuilding published aggregates
+    # on a misspelled flag before it was believed.
+    assert UNBACKED_EXIT_CODE not in (0, 1, 2)
+
+    # And the framework really does use 2, so the reasoning above fails at the same
+    # moment it stops being true rather than living on in a comment.
+    usage_error = runner.invoke(cli.app, ["verify", "--no-such-flag"])
+    assert usage_error.exit_code == 2
+    assert usage_error.exit_code != UNBACKED_EXIT_CODE
 
 
 def test_verify_reports_a_surplus_file_without_failing(
@@ -768,6 +795,133 @@ def test_verify_says_when_it_could_only_check_presence(
     assert result.exit_code == 0
     assert "presence only" in result.output
     assert "1 hour(s) carry no recorded size" in result.output
+
+
+def _fake_repair(
+    monkeypatch: pytest.MonkeyPatch, report: RepairReport, order: list[str] | None = None
+) -> dict[str, object]:
+    """Point the command at a canned repair outcome, recording what it was passed."""
+    calls: dict[str, object] = {}
+    order = order if order is not None else []
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection(order, object()))
+
+    async def fake_create_schema(connection_arg: object) -> None:
+        order.append("create_schema")
+
+    async def fake_repair_unbacked(connection_arg: object, **kwargs: object) -> RepairReport:
+        calls.update(kwargs)
+        order.append("repair")
+        return report
+
+    monkeypatch.setattr(cli, "create_schema", fake_create_schema)
+    monkeypatch.setattr(cli, "repair_unbacked", fake_repair_unbacked)
+    return calls
+
+
+def test_repair_lake_exits_zero_and_fetches_nothing_when_there_is_nothing_to_repair(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    calls = _fake_repair(monkeypatch, RepairReport())
+
+    result = runner.invoke(cli.app, ["repair-lake"])
+
+    assert result.exit_code == 0
+    assert "nothing to repair" in result.output
+    # The default is one at a time, unlike the backfill's three: the publisher
+    # dropped thirteen connections inside a second at three, and a repair is
+    # watched work on hours already known to be broken.
+    assert calls["concurrency"] == 1
+    assert calls["dry_run"] is False
+
+
+def test_repair_lake_dry_run_exits_nonzero_and_says_it_changed_nothing(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # A dry run over a broken lake must not exit 0. A rehearsal that reports
+    # success is indistinguishable from a healthy lake to anything scripted.
+    report = RepairReport(
+        dry_run=True,
+        unbacked=[Finding(date(2026, 7, 22), 5, Problem.ABSENT, "no file")],
+    )
+    calls = _fake_repair(monkeypatch, report)
+
+    result = runner.invoke(cli.app, ["repair-lake", "--dry-run"])
+
+    assert result.exit_code == INCOMPLETE_EXIT_CODE
+    assert "DRY RUN" in result.output
+    assert "Nothing was changed" in result.output
+    assert calls["dry_run"] is True
+
+
+def test_repair_lake_reports_a_claim_that_did_not_reproduce(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # The output this command exists for. The hour is repaired -- exit 0 -- and the
+    # interesting part is that the record had been wrong about it by a specific
+    # amount, printed rather than absorbed.
+    report = RepairReport(
+        unbacked=[Finding(date(2026, 7, 22), 5, Problem.ABSENT, "no file")],
+        reconciliations=[
+            Reconciliation(
+                day=date(2026, 7, 22),
+                hour=5,
+                claimed_events=100,
+                problem="absent",
+                outcome=HourStatus.INGESTED,
+                actual_events=165_892,
+                detail="ingested",
+            )
+        ],
+    )
+    _fake_repair(monkeypatch, report)
+
+    result = runner.invoke(cli.app, ["repair-lake"])
+
+    assert result.exit_code == 0
+    assert "DIFFERS" in result.output
+    assert "100" in result.output and "165,892" in result.output
+    assert "the claims were untrue" in result.output
+
+
+def test_repair_lake_exits_nonzero_when_some_hours_were_not_recovered(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    report = RepairReport(
+        unbacked=[Finding(date(2026, 7, 22), 5, Problem.ABSENT, "no file")],
+        reconciliations=[
+            Reconciliation(
+                day=date(2026, 7, 22),
+                hour=5,
+                claimed_events=100,
+                problem="absent",
+                outcome=None,
+                actual_events=None,
+                detail="fetch failed",
+            )
+        ],
+    )
+    _fake_repair(monkeypatch, report)
+
+    result = runner.invoke(cli.app, ["repair-lake"])
+
+    assert result.exit_code == INCOMPLETE_EXIT_CODE
+    assert "INCOMPLETE" in result.output
+    assert "NOT RECOVERED" in result.output
+
+
+def test_repair_lake_ensures_the_schema_before_reading_it(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # Matching verify, and unlike marts-status: repairing a database that was
+    # never ingested into should report "nothing to repair" rather than failing on
+    # a table that does not exist.
+    order: list[str] = []
+    _fake_repair(monkeypatch, RepairReport(), order)
+
+    result = runner.invoke(cli.app, ["repair-lake"])
+
+    assert result.exit_code == 0
+    assert order == ["open connection", "create_schema", "repair", "close connection"]
 
 
 def test_marts_status_exits_zero_when_every_lake_day_is_reflected(

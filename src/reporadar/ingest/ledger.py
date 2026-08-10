@@ -166,6 +166,28 @@ GROUP BY status
 ORDER BY status
 """
 
+# The only statement here that destroys anything, and the only one whose caller is
+# a human running a repair rather than a loop.
+#
+# **``status = 'ingested'`` is a guard, not a filter.** This exists to remove
+# claims of success that a check has proven untrue, and those rows are ingested by
+# definition. Written into the SQL so the restriction holds however the caller was
+# built — a `missing` row is the loop's decision not to keep asking, and a `failed`
+# row is a triage note; erasing either would quietly re-queue work somebody
+# deliberately settled.
+#
+# ``RETURNING`` rather than a row count: a destructive statement should hand back
+# *which* rows it removed, not how many. The caller reconciles what each row
+# claimed against what a fresh fetch finds, and it cannot do that from a number.
+# It also makes the mismatch case detectable — asking for eight and being handed
+# six is a fact worth failing on, and a count of six alone is not.
+FORGET_INGESTED_HOURS: Final = """
+DELETE FROM archive_hours
+WHERE status = 'ingested'
+  AND (day, hour) IN (SELECT * FROM unnest($1::date[], $2::smallint[]))
+RETURNING day, hour
+"""
+
 
 @dataclass(frozen=True)
 class HourRecord:
@@ -255,6 +277,38 @@ async def ingested_hours(connection: Connection) -> list[HourRecord]:
         )
         for row in rows
     ]
+
+
+async def forget_ingested_hours(
+    connection: Connection, hours: Sequence[tuple[date, int]]
+) -> list[tuple[date, int]]:
+    """Remove ingested rows for the given hours; return the ones actually removed.
+
+    The one write in this module that takes something away. It exists because
+    ``record_hour`` deliberately **cannot** correct these rows: its upsert refuses
+    to move a row off ``ingested`` (see ``RECORD_HOUR``), so a re-ingest that comes
+    back missing, failed, or not at all leaves the false claim exactly where it
+    was. That guard is right — it stops a transient fetch failure erasing a real
+    ingest — which is precisely why a repair has to clear the row first rather than
+    write over it.
+
+    Returns what was deleted rather than a count, so the caller can say which
+    claims it destroyed and reconcile each against a fresh fetch. An empty
+    ``hours`` short-circuits: the array form would otherwise send an empty query
+    to the server to be told nothing matched.
+    """
+    if not hours:
+        return []
+    days = [day for day, _hour in hours]
+    numbers = [hour for _day, hour in hours]
+    rows = await connection.fetch(FORGET_INGESTED_HOURS, days, numbers)
+    removed = [(_as_date(row[0]), _as_int(row[1])) for row in rows]
+    logger.warning(
+        "archive ledger: removed %d ingested row(s) that no file backs: %s",
+        len(removed),
+        ", ".join(f"{day} {hour:02d}" for day, hour in removed) or "none",
+    )
+    return removed
 
 
 async def status_counts(connection: Connection) -> dict[HourStatus, tuple[int, int]]:
