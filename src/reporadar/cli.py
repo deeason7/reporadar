@@ -78,7 +78,12 @@ def poll(cycles: int = 10, interval_s: float = 10.0, pages: int = 3) -> None:
 
 
 @app.command()
-def serve(cycles: int | None = None, interval_s: float = 10.0, pages: int = 3) -> None:
+def serve(
+    cycles: int | None = None,
+    interval_s: float = 10.0,
+    pages: int = 3,
+    report_every: int = 60,
+) -> None:
     """Run the always-on poller: fresh events go to hourly NDJSON files and the stream."""
     # The service's logs are its interface while it runs; the library only ever
     # emits, so the long-running entrypoint is where logging gets configured.
@@ -99,12 +104,19 @@ def serve(cycles: int | None = None, interval_s: float = 10.0, pages: int = 3) -
                 # the stream is best-effort, so a broker blip costs freshness, not
                 # the capture service. See TeeSink.
                 sink = TeeSink(HourlyNdjsonSink(settings.live_dir), stream)
+                # report_every counts *cycles*, not seconds, and the cycle length is
+                # the server's to set: /events answers X-Poll-Interval: 60 and
+                # effective_interval takes the slower of that and --interval-s. So the
+                # default is an hour of silence, and lowering --interval-s shortens
+                # neither the polling nor the reporting — this flag is the only lever
+                # on how often a run says what it has done.
                 counters = await poll_stream(
                     settings,
                     sink,
                     interval_s=interval_s,
                     pages=pages,
                     seen_window=settings.seen_window,
+                    report_every=report_every,
                     max_cycles=cycles,
                     stop=stop,
                 )

@@ -280,6 +280,14 @@ All notable changes to this project are documented here, per
   claimed successes can be cleared, enforced in the statement itself, so an hour deliberately settled
   as missing or held for triage cannot be erased by a mistyped argument. One hour is fetched at a time
   by default, because the publisher dropped thirteen connections inside a second at three.
+- `serve --report-every`, so an operator can choose how often a run says what it has done. The poll
+  loop had always reported on an interval and the service had no way to set it, leaving the built-in
+  default as the only behaviour available. The unit is cycles, matching `consume`, and the cycle
+  length belongs to the API rather than to the configuration — /events asks for sixty seconds between
+  polls and the poller takes the slower of that and `--interval-s` — so the default is roughly an hour
+  before the first line, and lowering `--interval-s` shortens neither the polling nor the reporting.
+  That interaction is why the flag is worth having: it is the only lever on the wait. `0` silences
+  progress reporting without silencing the summary written when the run ends.
 
 ### Changed
 - `verify` exits `3` rather than `1` when the record claims hours the store does not hold. It was `1`

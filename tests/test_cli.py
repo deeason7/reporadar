@@ -203,11 +203,17 @@ def test_serve_tees_capture_to_the_files_and_the_stream(
         interval_s: float,
         pages: int,
         seen_window: int,
+        report_every: int,
         max_cycles: int | None,
         stop: asyncio.Event,
     ) -> PollCounters:
         order.append("poll")
-        calls.update(max_cycles=max_cycles, seen_window=seen_window, pages=pages)
+        calls.update(
+            max_cycles=max_cycles,
+            seen_window=seen_window,
+            pages=pages,
+            report_every=report_every,
+        )
         await sink([sample])  # drive one batch through the wired sink
         counters = PollCounters()
         counters.record_cycle(fetched=5, fresh=3)
@@ -225,6 +231,11 @@ def test_serve_tees_capture_to_the_files_and_the_stream(
     assert calls["sink_dir"] == pinned_cli_settings.live_dir
     assert calls["max_cycles"] == 2  # --cycles arrives as the loop's bound
     assert calls["seen_window"] == pinned_cli_settings.seen_window == 1_000
+    # No --report-every passed, so the default travels. It is pinned here because it
+    # is a duration nobody reads off the flag: 60 *cycles* at the 60s the server
+    # asks for is an hour before the run says anything. Changing it should have to
+    # change a test.
+    assert calls["report_every"] == 60
     # the one batch the loop pushed reached BOTH the files and the stream — the tee is real
     assert ndjson_sinks[0].batches == [[sample]]
     assert stream.batches == [[sample]]
@@ -233,6 +244,54 @@ def test_serve_tees_capture_to_the_files_and_the_stream(
     assert "stopped:" in result.output
     assert "'fresh': 3" in result.output  # the final counters surface to the operator
     assert "stream_drops=0" in result.output  # drops are observable at shutdown
+
+
+def test_serve_report_every_reaches_the_poll_loop(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # The test above pins the default, so on its own it cannot tell a flag that is
+    # wired from one the parser accepts and drops: every assertion there stays green
+    # either way. This passes a value the default cannot produce. 0 is the documented
+    # off switch — poll_stream disables progress logging on it — so it is both the
+    # useful case and the one no default could be mistaken for.
+    calls: dict[str, object] = {}
+
+    async def fake_sink(events: Sequence[RawEvent]) -> None:
+        return None
+
+    def make_ndjson(base_dir: Path) -> EventSink:
+        return fake_sink
+
+    @asynccontextmanager
+    async def fake_kafka_sink(settings: Settings) -> AsyncIterator[EventSink]:
+        yield fake_sink
+
+    async def fake_require_topics(settings: Settings, topics: Sequence[str]) -> None:
+        return None
+
+    async def fake_poll_stream(
+        settings: Settings,
+        sink: EventSink,
+        *,
+        interval_s: float,
+        pages: int,
+        seen_window: int,
+        report_every: int,
+        max_cycles: int | None,
+        stop: asyncio.Event,
+    ) -> PollCounters:
+        calls["report_every"] = report_every
+        return PollCounters()
+
+    monkeypatch.setattr(cli, "HourlyNdjsonSink", make_ndjson)
+    monkeypatch.setattr(cli, "kafka_sink", fake_kafka_sink)
+    monkeypatch.setattr(cli, "require_topics", fake_require_topics)
+    monkeypatch.setattr(cli, "poll_stream", fake_poll_stream)
+
+    result = runner.invoke(cli.app, ["serve", "--cycles", "1", "--report-every", "0"])
+
+    assert result.exit_code == 0
+    assert calls["report_every"] == 0  # 0 disables progress logging
 
 
 def test_consume_wires_source_store_and_dead_letter_sink(

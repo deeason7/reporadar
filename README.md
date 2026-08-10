@@ -105,6 +105,10 @@ archive layout **and** publishing them to the Kafka stream that `consume` reads.
 the capture record, so a write failure there stops the run; the stream is best-effort, so
 a broker outage is logged and counted rather than halting capture. It needs the broker up and
 the live topic provisioned; Ctrl-C or SIGTERM ends the run cleanly after the current cycle.
+It logs a progress line every `--report-every` cycles — default 60, `0` to silence it — and one
+more on exit. The unit is cycles rather than seconds because GitHub sets the cycle length: it
+asks for 60s between polls and `--interval-s` cannot go under that, so the default is about an
+hour before the first line and lowering `--interval-s` does not shorten the wait.
 `consume` is the other half: it reads the stream into the database, sending anything that
 will not decode to the dead-letter topic, and stops on the same signals. It needs the local
 stack running and `REPORADAR_POSTGRES_DSN` set.
