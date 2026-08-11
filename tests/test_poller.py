@@ -11,10 +11,9 @@ import httpx
 import pytest
 import respx
 
-from conftest import TEST_API_BASE
+from conftest import TEST_API_BASE, read_ndjson
 from reporadar.config import Settings
 from reporadar.github.client import GitHubClient
-from reporadar.github.events import iter_ndjson
 from reporadar.ingest import poller
 from reporadar.ingest.poller import collect_sample, poll_once
 
@@ -128,7 +127,7 @@ async def test_collect_sample_writes_ndjson_deduped_across_cycles(
     assert out.parent == settings.live_dir  # lands where config says samples live
     assert out.name.startswith("events_") and out.name.endswith(".ndjson")
     # Read the file back through the system's own parser: producer/consumer contract.
-    events = list(iter_ndjson(out.read_text(encoding="utf-8").splitlines()))
+    events = read_ndjson(out)
     assert [event.id for event in events] == ["a", "b", "c"]
 
 
@@ -145,7 +144,7 @@ async def test_collect_sample_bounded_window_can_reemit(
     )
     out = await collect_sample(settings, cycles=3, interval_s=0.0, pages=1, seen_window=1)
 
-    events = list(iter_ndjson(out.read_text(encoding="utf-8").splitlines()))
+    events = read_ndjson(out)
     assert [event.id for event in events] == ["a", "b", "a"]
 
 
@@ -177,7 +176,7 @@ async def test_collect_sample_survives_rate_limiting(
     out = await collect_sample(settings, cycles=2, interval_s=0.0, pages=1)
 
     # The rate-limited cycle is a gap in the sample, not a crash of the sampler.
-    events = list(iter_ndjson(out.read_text(encoding="utf-8").splitlines()))
+    events = read_ndjson(out)
     assert [event.id for event in events] == ["a"]
 
 
@@ -316,5 +315,5 @@ async def test_non_ascii_repository_names_survive_the_sample_file(
 
     out = await collect_sample(settings, cycles=1, interval_s=0.0, pages=1)
 
-    events = list(iter_ndjson(out.read_text(encoding="utf-8").splitlines()))
+    events = read_ndjson(out)
     assert [event.repo.name for event in events] == [name]

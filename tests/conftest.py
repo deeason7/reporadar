@@ -7,6 +7,22 @@ import pytest
 from pydantic import PostgresDsn
 
 from reporadar.config import Settings
+from reporadar.github.events import RawEvent, iter_ndjson
+
+
+def read_ndjson(path: Path) -> list[RawEvent]:
+    """Read a whole NDJSON file back through the system's own parser.
+
+    Split on ``"\\n"`` and nothing else. ``str.splitlines()`` is the obvious
+    spelling and the wrong one: it also breaks on U+2028 LINE SEPARATOR, which is
+    legal *unescaped* inside a JSON string and is written out raw by
+    ``model_dump_json()``. One event carrying it — a commit message, an issue
+    title — comes back as two fragments, neither of which parses, so the event is
+    not merely lost: it arrives in the dead-letter path as two failures, and the
+    count of what went wrong is wrong too. Every reader here goes through this
+    function so the decision lives in one place; ``test_ndjson_lines.py`` holds it.
+    """
+    return list(iter_ndjson(path.read_text(encoding="utf-8").split("\n")))
 
 
 @pytest.fixture()

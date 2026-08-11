@@ -9,9 +9,9 @@ import httpx
 import pytest
 import respx
 
-from conftest import TEST_API_BASE
+from conftest import TEST_API_BASE, read_ndjson
 from reporadar.config import Settings
-from reporadar.github.events import RawEvent, iter_ndjson
+from reporadar.github.events import RawEvent
 from reporadar.ingest.service import poll_stream
 from reporadar.ingest.sinks import HourlyNdjsonSink, TeeSink
 
@@ -56,8 +56,8 @@ async def test_buckets_events_into_hourly_files_by_event_time(tmp_path: Path) ->
         ]
     )
 
-    h15 = list(iter_ndjson(sink.path_for("2026-07-07-15").read_text(encoding="utf-8").splitlines()))
-    h16 = list(iter_ndjson(sink.path_for("2026-07-07-16").read_text(encoding="utf-8").splitlines()))
+    h15 = read_ndjson(sink.path_for("2026-07-07-15"))
+    h16 = read_ndjson(sink.path_for("2026-07-07-16"))
     assert [event.id for event in h15] == ["1", "2"]
     assert [event.id for event in h16] == ["3"]
 
@@ -72,7 +72,7 @@ async def test_hour_bucket_follows_the_instant_not_the_written_offset(tmp_path: 
 
     await sink([_event("1", "2026-07-07T23:30:00-05:00")])
 
-    h04 = list(iter_ndjson(sink.path_for("2026-07-08-04").read_text(encoding="utf-8").splitlines()))
+    h04 = read_ndjson(sink.path_for("2026-07-08-04"))
     assert [event.id for event in h04] == ["1"]
     assert not sink.path_for("2026-07-07-23").exists()
 
@@ -83,9 +83,7 @@ async def test_appends_across_calls_without_truncating(tmp_path: Path) -> None:
     await sink([_event("1", "2026-07-07T15:10:00Z")])
     await sink([_event("2", "2026-07-07T15:20:00Z")])  # same hour, later call
 
-    events = list(
-        iter_ndjson(sink.path_for("2026-07-07-15").read_text(encoding="utf-8").splitlines())
-    )
+    events = read_ndjson(sink.path_for("2026-07-07-15"))
     assert [event.id for event in events] == ["1", "2"]  # appended, not overwritten
 
 
@@ -100,9 +98,7 @@ async def test_poll_stream_writes_through_the_hourly_sink(
 
     await poll_stream(settings, sink, interval_s=0.0, pages=1, max_cycles=1)
 
-    written = list(
-        iter_ndjson(sink.path_for("2026-07-07-15").read_text(encoding="utf-8").splitlines())
-    )
+    written = read_ndjson(sink.path_for("2026-07-07-15"))
     assert [event.id for event in written] == ["z"]
 
 
