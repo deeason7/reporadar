@@ -681,6 +681,81 @@ def test_backfill_ensures_the_schema_then_converges_the_given_range_once(
     assert "'missing': 1" in result.output
 
 
+def _backfill_returning(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, counters: ArchiveCounters
+) -> None:
+    """Wire `backfill` up so the ledger scan returns exactly these counters."""
+    _archive_settings(monkeypatch, settings)
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection([], object()))
+
+    async def fake_create_schema(connection_arg: object) -> None:
+        return None
+
+    async def fake_converge_once(*args: object, **kwargs: object) -> ArchiveCounters:
+        return counters
+
+    monkeypatch.setattr(cli, "create_schema", fake_create_schema)
+    monkeypatch.setattr(cli, "converge_once", fake_converge_once)
+
+
+def test_backfill_exits_incomplete_when_hours_are_left_outstanding(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # An explicit range says these hours are wanted now, so a pass that ran is not a
+    # range that converged. Exiting 0 here tells a Makefile, a script or CI that the
+    # range is done, and every hour it skipped then looks settled to later readers —
+    # the same failure this command already refuses for a transposed range, reached
+    # by a slower road.
+    counters = ArchiveCounters()
+    counters.record_pass(due=48)
+    counters.record_hour(status=HourStatus.INGESTED, events=100)
+    counters.record_hour(status=None, events=None)  # attempted, left for a later pass
+    _backfill_returning(monkeypatch, pinned_cli_settings, counters)
+
+    result = runner.invoke(cli.app, ["backfill", "2026-07-21", "2026-07-22"])
+
+    assert result.exit_code == INCOMPLETE_EXIT_CODE
+    # The counters still print. The exit code says the range is incomplete; the
+    # operator still needs to see how incomplete, and which way.
+    assert "'outstanding': 1" in result.output
+    assert "'ingested': 1" in result.output
+
+
+def test_backfill_exits_incomplete_when_an_hour_could_not_be_trusted(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # `failed` is a different fact from `outstanding` — the hour arrived and was
+    # rejected, rather than never arriving — but for the caller they mean the same
+    # thing: the range did not converge and re-running is required.
+    counters = ArchiveCounters()
+    counters.record_pass(due=1)
+    counters.record_hour(status=HourStatus.FAILED, events=None)
+    _backfill_returning(monkeypatch, pinned_cli_settings, counters)
+
+    result = runner.invoke(cli.app, ["backfill", "2026-07-21", "2026-07-22"])
+
+    assert result.exit_code == INCOMPLETE_EXIT_CODE
+
+
+def test_backfill_treats_a_never_published_hour_as_settled(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # The negative control for the two above, and the reason `missing` is excluded
+    # from the check rather than folded in with the others. An hour the publisher
+    # never published is an answer, not an unfinished job — counting it as failure
+    # would make a complete backfill of an incomplete archive report failure forever,
+    # and this range's lake legitimately contains such hours.
+    counters = ArchiveCounters()
+    counters.record_pass(due=1)
+    counters.record_hour(status=HourStatus.MISSING, events=None)
+    _backfill_returning(monkeypatch, pinned_cli_settings, counters)
+
+    result = runner.invoke(cli.app, ["backfill", "2026-07-21", "2026-07-22"])
+
+    assert result.exit_code == 0
+    assert "'missing': 1" in result.output
+
+
 def test_backfill_refuses_a_range_whose_days_are_transposed(
     monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
 ) -> None:

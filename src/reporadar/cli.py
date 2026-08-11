@@ -274,6 +274,23 @@ def backfill(
 
     counters = asyncio.run(_run())
     typer.echo(f"done: {counters.as_dict()}")
+    if counters.outstanding or counters.failed:
+        # An explicit range is a claim that these hours are wanted now, so "the pass
+        # ran" is not the same as "the range is complete". `outstanding` counts hours
+        # attempted and deliberately left for a later pass; `failed` counts hours that
+        # arrived and could not be trusted. Either way the range did not converge, and
+        # exiting 0 tells the caller it did — a Makefile, a script or CI branches on
+        # that, and the hours it skipped then look settled to every later reader. Same
+        # failure this command already refuses for a transposed range, reached by a
+        # slower road.
+        #
+        # `missing` is excluded deliberately: an hour the publisher never published is
+        # a settled answer, not an unfinished job, and folding it in would make a
+        # complete backfill of an incomplete archive report failure forever.
+        #
+        # See INCOMPLETE_EXIT_CODE — the same fact `repair-lake` reports, so it is the
+        # same constant rather than a fourth spelling of 3.
+        raise typer.Exit(code=INCOMPLETE_EXIT_CODE)
 
 
 @app.command()

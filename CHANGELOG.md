@@ -290,6 +290,15 @@ All notable changes to this project are documented here, per
   progress reporting without silencing the summary written when the run ends.
 
 ### Changed
+- `backfill` exits `3` when the range it was given did not converge, rather than `0` for any pass
+  that ran. Naming an explicit range is a claim that those hours are wanted now, so a pass that
+  left an hour for later, or rejected one it could not trust, has not done what was asked — and a
+  caller that branches on the exit code, a script or a build step, read a partial range as a
+  finished one. The counters still print, because how incomplete a range is and in which direction
+  is the operator's next question. An hour the publisher never published is excluded on purpose: it
+  is a settled answer rather than unfinished work, and counting it would make a complete backfill
+  of an incomplete archive report failure forever. It reuses the same code the repair command
+  reports for the same fact, rather than a fourth spelling of `3`.
 - The compliance statement now records that anything published from this data is released open
   access. GitHub's Acceptable Use Policies permit research use of public information only on that
   condition, so the term governs how results may be published rather than what may be collected —

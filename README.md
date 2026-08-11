@@ -122,7 +122,12 @@ record what is outstanding, converts those hours a few at a time, and repeats on
 There is no schedule and so no missed run — downtime, a partial failure and an hour published
 late all resolve on the next pass. `backfill` runs the same pass once over an explicit range of
 days and stops; unlike the service it also retries hours previously found unreadable, which is
-how a fix reaches the hours it fixes. Both need `REPORADAR_POSTGRES_DSN` and no broker at all.
+how a fix reaches the hours it fixes. It exits `3` when the range did not converge — an hour left
+for a later pass, or one that arrived and could not be trusted — because naming a range says those
+hours are wanted now, and a caller that branches on the exit code would otherwise read a partial
+range as a finished one. An hour the publisher never published does not count against it: that is
+a settled answer rather than an unfinished job. Both need `REPORADAR_POSTGRES_DSN` and no broker
+at all.
 Both also remove each hour's compressed source once the record of it is written, reporting the
 bytes reclaimed: the columnar copy is what the record points at, while the source is a cache of a
 file the publisher still serves, and keeping both costs two and a half times the disk. Pass
