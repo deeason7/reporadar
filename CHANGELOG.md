@@ -290,6 +290,12 @@ All notable changes to this project are documented here, per
   progress reporting without silencing the summary written when the run ends.
 
 ### Changed
+- The compliance statement now records that anything published from this data is released open
+  access. GitHub's Acceptable Use Policies permit research use of public information only on that
+  condition, so the term governs how results may be published rather than what may be collected —
+  the one half of the pipeline the statement had no rule for. It is a condition of the access the
+  work relies on rather than a preference, so a closed publication would put the collection itself
+  outside the permission it runs on.
 - `verify` exits `3` rather than `1` when the record claims hours the store does not hold. It was `1`
   while nothing acted on the answer, and `1` is also what an unhandled exception exits with, so a
   caller could not tell a finding from a crash — and a repair that treated a crash as a finding would

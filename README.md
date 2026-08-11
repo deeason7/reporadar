@@ -385,6 +385,11 @@ the official GitHub REST API (authenticated, within published rate limits) and G
 no scraping. Person-level signals are aggregated to repo/ecosystem level in everything
 published; raw event data is never redistributed as a dataset.
 
+Anything published from this data — analysis, write-ups, figures — is released **open access**.
+GitHub's Acceptable Use Policies permit research use of public information *"only if any
+publications resulting from that research are open access"*, so this is a condition of the
+access the project runs on rather than a preference about where to publish.
+
 ## License
 
 [MIT](LICENSE)
