@@ -131,9 +131,10 @@ async def test_a_primary_failure_is_fatal_and_never_touches_the_stream() -> None
 async def test_a_best_effort_failure_is_logged_counted_and_survived(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # A stream failure must not stop capture: the record is already written, and
-    # the archive reconciles anything the stream misses. It is loud and counted,
-    # never silent, and a later best-effort sink still runs.
+    # A stream failure must not stop capture: the record on disk is already
+    # written, and it is the record — nothing downstream is asked to reconstruct
+    # it. The failure is loud and counted, never silent, and a later best-effort
+    # sink still runs.
     primary, failing, healthy = RecordingSink(), RecordingSink(fail=True), RecordingSink()
     tee = TeeSink(primary, failing, healthy)
 

@@ -80,12 +80,12 @@ marts-status:
 # why this is safe to run repeatedly: over an unchanged lake it is a directory
 # walk, one small query, and no build at all.
 #
-# Three outcomes, not two, and the difference is the point. Exit 2 means stale
+# Three outcomes, not two, and the difference is the point. Exit 3 means stale
 # and is the only code that triggers a build; any other non-zero means the check
 # itself did not run, and rebuilding on that would turn an unreachable database
 # into a rebuild whose own failure becomes the answer.
 #
-# The code is 3 rather than 2, and that is not cosmetic. Two is the conventional
+# Three rather than two, and that is not cosmetic. Two is the conventional
 # usage-error code, so a misspelled flag exits 2 from the command-line framework
 # before the check runs; and the runner exits 2 when it cannot spawn the command
 # at all. Branching on 2 was watched rebuilding the published aggregates in both

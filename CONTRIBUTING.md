@@ -23,9 +23,8 @@ make lint test    # run the same checks CI enforces
 
 ## Branches
 
-- `main` — releasable.
-- `develop` — integration branch. Feature work branches off it as `feature/*`, `fix/*`, or
-  `test/*` and merges back with `--no-ff`.
+`main` is the only long-lived branch and is kept releasable. Branch from it for a change and open a
+pull request back into it, naming the branch for the change — `feature/*`, `fix/*`, or `test/*`.
 
 ## Security
 

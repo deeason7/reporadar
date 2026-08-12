@@ -3,10 +3,10 @@
 `poll_stream` pushes fresh events to an ``EventSink``; this module provides the
 file sink used for local capture and the tee that sends one batch to two places
 at once. Events are bucketed into hourly NDJSON files **by event time**
-(``created_at``), mirroring GH Archive's hourly layout — so a captured live hour
-lines up directly with the archive hour it should be reconciled against (capture
-rate). Writes are append-only, so a restart resumes the current hour's file
-instead of truncating it.
+(``created_at``), mirroring GH Archive's hourly layout, so a captured hour and an
+archived hour cover the same span and can be compared side by side. Writes are
+append-only, so a restart resumes the current hour's file instead of truncating
+it.
 """
 
 from __future__ import annotations
@@ -58,20 +58,20 @@ class TeeSink:
     best-effort.
 
     The split is not cosmetic; it encodes which failure is allowed to stop the
-    service. The **primary** sink is the reconciliation record — the hourly
-    NDJSON files the capture rate is measured against — so a failure there is
-    fatal and propagates: losing the completeness record silently is the one
-    outcome this whole design exists to prevent. The **best-effort** sinks are
-    the hot path (the Kafka stream that feeds the validated store); valuable, but
-    not the arbiter, because the archive reconciliation is the ultimate
-    completeness check. A failure there is logged loudly and counted, and the run
-    continues — so a broker hiccup costs freshness for a while instead of turning
-    the capture service into a crash-loop and taking the record down with it.
+    service. The **primary** sink holds the only copy — the hourly NDJSON files
+    are the capture itself, and nothing downstream can reconstruct an event that
+    was never written — so a failure there is fatal and propagates. Losing the
+    record silently is the one outcome this whole design exists to prevent. The
+    **best-effort** sinks are the hot path (the Kafka stream that feeds the
+    validated store), and everything they carry is already on disk, so a failure
+    there is logged loudly and counted and the run continues: a broker hiccup
+    costs freshness for a while instead of turning the capture service into a
+    crash-loop and taking the record down with it.
 
-    "Best-effort" never means "silent" (Rule 10): every dropped batch is a
-    warning, and ``dropped`` is surfaced at shutdown. A partially-published batch
-    is fine — the consumer dedupes by event id and the archive reconciles the
-    rest.
+    "Best-effort" never means "silent": every dropped batch is a warning, and
+    ``dropped`` is surfaced at shutdown. A partially-published batch is fine —
+    the consumer dedupes by event id, and the file on disk is unaffected either
+    way.
     """
 
     def __init__(self, primary: EventSink, *best_effort: EventSink) -> None:

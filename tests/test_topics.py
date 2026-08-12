@@ -190,7 +190,7 @@ async def test_a_replication_factor_above_the_broker_count_is_refused_before_any
 
 
 async def test_the_brokers_own_refusal_survives_into_the_error() -> None:
-    # Rule 10: the broker's sentence names the real numbers. Replacing it with a
+    # The broker's sentence names the real numbers. Replacing it with a
     # tidier message of our own would lose the actionable part.
     admin = FakeAdmin(
         brokers=9, force_code={"raw.events.live": (38, "only 1 broker(s) are registered.")}
