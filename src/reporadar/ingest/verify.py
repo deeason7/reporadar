@@ -152,7 +152,7 @@ class VerifyReport:
         return not self.unbacked
 
     def as_dict(self) -> dict[str, object]:
-        """The shape a log line and a dashboard panel want."""
+        """Flat counts for one log line — every finding reduced to a number."""
         return {
             "claimed": self.claimed,
             "agreed": self.agreed,

@@ -1,7 +1,13 @@
-"""What's in an archive hour, and how much of it did the live poller capture?
+"""What's in an archive hour, and how much of it a live sample overlaps.
 
-DuckDB reads the gzipped NDJSON archives directly, so both questions are
-single SQL queries — no ETL required.
+DuckDB reads the gzipped NDJSON archives directly, so both are single SQL
+queries — no ETL required.
+
+The overlap is a join on event id, and it is **not** an answer to "how much of
+the feed did we capture". Measured against real files the two sources share no
+event identifier, so the join is empty by construction; ``capture_rate``
+returns ``None`` for that rather than the confident zero the same arithmetic
+once produced.
 """
 
 from __future__ import annotations

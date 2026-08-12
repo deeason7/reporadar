@@ -115,8 +115,9 @@ async def ingest_hour(
 
     ``keep_source`` decides what happens to the downloaded archive after it has been
     converted. It defaults to keeping, so no caller loses a file by forgetting the
-    argument; the long-running commands pass ``False``, because a deployment that
-    keeps every source file grows two and a half times faster than one that does not.
+    argument; the long-running commands pass ``False``, because keeping every source
+    file grows the data directory two and a half times faster, and disk is the first
+    thing a loop that never stops runs out of.
     """
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware; naive datetimes are ambiguous")

@@ -9,8 +9,9 @@ so memory is capped by construction.
 The cost is explicit and quantifiable: an id can reappear as "new" once more
 than ``maxlen`` distinct ids have arrived since it was last seen. Size the
 window to the real duplication horizon (a few page-sweeps' worth of events),
-not to "forever" — the archive, not the live dedupe, is the completeness
-arbiter, so a rare re-emission is a measured cost, never a correctness claim.
+not to "forever" — this window is a memory bound, not a correctness mechanism,
+so a rare re-emission is a duplicate for a later stage to absorb and never a
+claim that an event was newly seen.
 """
 
 from __future__ import annotations

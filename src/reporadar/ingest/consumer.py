@@ -14,8 +14,8 @@ concrete adapters land as their own pieces behind stable seams.
 
 Delivery is at-least-once by design: a redelivered message reappears, so the
 bounded dedup window absorbs the common recent-redelivery case and the
-store is expected to be idempotent by event id for the rest — the same
-belt-and-suspenders the produce side uses (dedup window plus reconciliation), so
+store is expected to be idempotent by event id for the rest — the same pairing
+the produce side uses, a bounded window in front of an idempotent write, so
 at-least-once *delivery* becomes effectively-once *effect*.
 """
 

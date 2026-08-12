@@ -14,8 +14,8 @@ handed to the producer first (letting the client coalesce them into few
 requests), then all delivery futures are awaited before the call returns. A
 failed confirmation raises — the service dies loudly rather than dropping
 events silently — and a restart may then resend part of the batch:
-at-least-once delivery, which is why consumers dedupe by event id and
-completeness is measured by reconciliation rather than assumed.
+at-least-once delivery, which is why consumers dedupe by event id instead of
+assuming each event arrives exactly once.
 
 ``kafka_source`` is the read side: the batch stream ``consume_stream`` pulls
 from. It polls with a timeout so a stop arriving between messages is honored

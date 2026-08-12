@@ -1,8 +1,8 @@
 """The archive-hours ledger: which hours are in the lake, and which are not.
 
 One row per published hour, and one table doing four jobs — the completion
-record, the gap detector, the store for the capture KPI, and the source a
-dashboard panel reads. It exists under any scheduler, because a control plane's
+record, the gap detector, the per-hour counts the lake is checked against, and
+the source a dashboard panel reads. It exists under any scheduler, because a control plane's
 idea of what ran can drift from what is actually on disk, and the disk wins.
 
 **The ledger is what makes the ingest loop level-triggered.** Nothing here
@@ -97,8 +97,9 @@ CREATE TABLE IF NOT EXISTS archive_hours (
     bytes       bigint      CHECK (bytes >= 0),
     detail      text,
     recorded_at timestamptz NOT NULL,
-    -- An ingested hour must carry its count: it is the capture KPI's input, and a
-    -- success with a null count is a row that looks measured and is not.
+    -- An ingested hour must carry its count: every check of the lake against this
+    -- ledger starts from it, and a success with a null count is a row that looks
+    -- measured and is not.
     CONSTRAINT ingested_hours_are_counted
         CHECK (status <> 'ingested' OR events IS NOT NULL),
     PRIMARY KEY (day, hour)
@@ -312,7 +313,7 @@ async def forget_ingested_hours(
 
 
 async def status_counts(connection: Connection) -> dict[HourStatus, tuple[int, int]]:
-    """Hours and events per status — the shape a dashboard panel and a log line want."""
+    """Hours and events per status, aggregated in the database rather than in Python."""
     rows = await connection.fetch(COUNT_BY_STATUS)
     return {HourStatus(_as_str(row[0])): (_as_int(row[1]), _as_int(row[2])) for row in rows}
 

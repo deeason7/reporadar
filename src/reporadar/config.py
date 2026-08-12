@@ -43,9 +43,9 @@ class Settings(BaseSettings):
     # topics are partitioned identically. Raising this later re-maps every key, so
     # it is sized once at provisioning time rather than tuned casually.
     kafka_topic_partitions: int = Field(default=3, ge=1)
-    # 1 is correct for the single-node local stack and the single-VPS deploy; a real
-    # multi-broker cluster wants 3. Above the number of registered brokers the broker
-    # refuses outright, so this is checked before anything is created.
+    # 1 is correct for the single-node stack this runs against; a real multi-broker
+    # cluster wants 3. Above the number of registered brokers the broker refuses
+    # outright, so this is checked before anything is created.
     kafka_topic_replication_factor: int = Field(default=1, ge=1)
     # No default: the DSN carries a password, and a wrong-by-default database is
     # worse than an absent one. Only the store requires it, so it stays optional

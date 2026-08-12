@@ -100,9 +100,10 @@ def serve(
         await require_topics(settings, [settings.kafka_live_topic])
         with stop_on_signals() as stop:  # SIGINT/SIGTERM end the run after the current cycle
             async with kafka_sink(settings) as stream:
-                # The hourly files are the reconciliation record and come first;
-                # the stream is best-effort, so a broker blip costs freshness, not
-                # the capture service. See TeeSink.
+                # The hourly files hold the only copy and come first; the stream
+                # is best-effort and carries nothing that is not already on disk,
+                # so a broker blip costs freshness, not the capture service.
+                # See TeeSink.
                 sink = TeeSink(HourlyNdjsonSink(settings.live_dir), stream)
                 # report_every counts *cycles*, not seconds, and the cycle length is
                 # the server's to set: /events answers X-Poll-Interval: 60 and
@@ -204,8 +205,8 @@ def archive_serve(
                     # A converted hour's source is a cache of an immutable file the
                     # publisher still serves, so an always-on run discards it: keeping
                     # every one grows the data directory two and a half times faster,
-                    # and the disk is the first thing a long-lived deployment runs out
-                    # of. --keep-source is for a laptop that wants the raw hour to hand.
+                    # and disk is the first thing a loop that never stops runs out of.
+                    # --keep-source is for a laptop that wants the raw hour to hand.
                     keep_source=keep_source,
                     max_passes=passes,
                     stop=stop,
@@ -470,7 +471,13 @@ def provision(check: bool = False) -> None:
 
 @app.command(name="capture-rate")
 def capture_rate_cmd(archive_path: Path, live_path: Path) -> None:
-    """The completeness KPI: how much of an archived hour the live sample caught."""
+    """Overlap between a live sample and an archived hour, matched on event id.
+
+    Reports how many of the archive hour's events also appear in the sample.
+    This is not a measure of how much of the feed was captured: the two sources
+    were found not to share an event identifier, so the join comes back empty
+    and that case is named rather than reported as a rate of zero.
+    """
     report = capture_rate(archive_path, live_path)
     typer.echo(f"archive events : {report.archive_events:,}")
     typer.echo(f"live events    : {report.live_events:,}")

@@ -10,7 +10,7 @@ While the context is active, SIGINT no longer raises ``KeyboardInterrupt`` —
 Ctrl-C *requests* a stop. Handlers are installed on the running loop and
 removed on exit, so nothing outlives the run. Unix-only by design
 (``loop.add_signal_handler`` is unavailable on Windows's proactor loop); dev
-is macOS and the deploy target is Linux.
+is macOS and the containers are Linux.
 """
 
 from __future__ import annotations
