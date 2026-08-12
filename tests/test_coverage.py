@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from reporadar.ingest.coverage import (
+    DEFAULT_GAP_FACTOR,
     CoverageTracker,
     SequenceSpan,
     numeric_ids,
@@ -14,10 +15,34 @@ LOWER_BASE = 12_222_000_000
 UPPER_BASE = 15_666_900_000
 SPACING = 4  # ~3.4-4.2 ids per event measured on live pages
 
+# The feed has a third scale, sitting between those two, and a fixture without it
+# will agree with almost anything said about how sequences are split. Events
+# arrive in dense bursts: neighbouring events ~2 ids apart inside a burst, but
+# consecutive bursts ~2,790 apart. Measured over complete archive hours, where
+# bursts of exactly 100 events are the commonest shape by some margin.
+IN_BURST_SPACING = 2
+BETWEEN_BURSTS = 2_790
+BURST = 100
+BURSTS = 6
+
 
 def _run(base: int, n: int, *, spacing: int = SPACING, start: int = 0) -> list[int]:
     """A contiguous run of ``n`` events, as one uninterrupted sweep would see."""
     return [base + start + i * spacing for i in range(n)]
+
+
+def _bursty(base: int, bursts: int = BURSTS) -> list[int]:
+    """One id band carrying several dense bursts, the way a real page does.
+
+    Three scales at once, which is the entire point of it: inside a burst,
+    between bursts, and (once two of these are combined) between bands.
+    """
+    ids: list[int] = []
+    cursor = base
+    for _ in range(bursts):
+        ids.extend(cursor + i * IN_BURST_SPACING for i in range(BURST))
+        cursor = ids[-1] + BETWEEN_BURSTS
+    return ids
 
 
 def test_a_single_sequence_stays_whole() -> None:
@@ -32,17 +57,52 @@ def test_two_sequences_are_separated() -> None:
     assert spans[0].high < spans[1].low
 
 
-def test_sequence_split_is_insensitive_to_the_gap_factor() -> None:
-    # The whole defence of DEFAULT_GAP_FACTOR is that it is not tuned: the two
-    # scales in this data differ by ~9 orders of magnitude, so any threshold in
-    # a vast range partitions it identically. If a future change made the answer
-    # depend on the exact factor, that claim would be false and this goes red.
-    ids = _run(LOWER_BASE, 30) + _run(UPPER_BASE, 70)
+def test_the_gap_factor_decides_which_scale_counts_as_a_sequence() -> None:
+    # This replaces a test asserting the opposite -- that the factor was not
+    # tuned and any threshold across a vast range partitioned the feed the same
+    # way. It was green, and it was green because of what its fixture lacked:
+    # two scales nine orders of magnitude apart agree with any threshold between
+    # them, and the gap between bursts sits in that space. Which side of it the
+    # factor falls on decides whether a sequence means one burst or one band, and
+    # spacing -- the number this module exists to measure -- is then taken across
+    # whichever was chosen. So the factor is load-bearing and must stay visible.
+    ids = _bursty(LOWER_BASE) + _bursty(UPPER_BASE)
     shapes = {
-        factor: [s.count for s in split_sequences(ids, gap_factor=factor)]
-        for factor in (10.0, 100.0, 1_000.0, 100_000.0, 10_000_000.0)
+        factor: len(split_sequences(ids, gap_factor=factor))
+        for factor in (10.0, 100.0, 1_000.0, 10_000.0, 100_000.0, 10_000_000.0)
     }
-    assert set(map(tuple, shapes.values())) == {(30, 70)}, shapes
+    assert len(set(shapes.values())) > 1, shapes
+    assert shapes[10.0] == 2 * BURSTS, "below the gap between bursts: a sequence is a burst"
+    assert shapes[10_000_000.0] == 2, "above it: a sequence is a band"
+
+
+def test_the_scale_selected_decides_the_spacing_that_gets_measured() -> None:
+    # Why the test above matters rather than being a curiosity about a constant.
+    # Spacing measured inside a burst is not the rate the feed advances at
+    # between bursts, and the estimate divides an elapsed id distance spanning
+    # both. No factor is asserted here on purpose: how far apart the two readings
+    # sit depends on how many bursts this fixture holds, which is a property of
+    # the fixture and not of the feed. The relation is the durable part.
+    ids = _bursty(UPPER_BASE)
+    inside = split_sequences(ids, gap_factor=10.0)
+    across = split_sequences(ids, gap_factor=10_000_000.0)
+    assert len(across) == 1
+    across_spacing = across[0].ids_per_event
+    assert across_spacing is not None
+    assert all(s.ids_per_event == float(IN_BURST_SPACING) for s in inside)
+    assert across_spacing > 10 * IN_BURST_SPACING
+
+
+def test_the_shipped_default_measures_spacing_inside_a_burst() -> None:
+    # Where the shipped default actually falls, pinned rather than left to be
+    # inferred from the two tests above: below the gap between bursts. A page
+    # carrying several bursts is therefore split into one sequence each, and the
+    # spacing that reaches the estimate is the in-burst one. Moving the default
+    # across that boundary changes what the reported ratio means, so it should
+    # not be possible to move it quietly.
+    spans = split_sequences(_bursty(UPPER_BASE), gap_factor=DEFAULT_GAP_FACTOR)
+    assert len(spans) == BURSTS
+    assert all(s.ids_per_event == float(IN_BURST_SPACING) for s in spans)
 
 
 def test_ids_per_event_is_measured_not_assumed() -> None:

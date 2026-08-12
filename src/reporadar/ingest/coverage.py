@@ -20,11 +20,19 @@ consecutive, so their mean id gap is an observation, taken fresh every cycle. A
 constant here would be a number that quietly stops being true the day GitHub
 changes how ids are handed out.
 
-**The assumption this rests on, stated once:** that a returned page is
-contiguous — that the feed does not omit events *inside* a page. If it does,
-the observed spacing is wider than the real one, the estimate of what went by
-shrinks, and coverage reads high. The estimate is only ever as good as that
-assumption, which is why it is reported as an estimate.
+**What this rests on — two assumptions, and only one of them holds.** The first
+is that a returned page is contiguous, that the feed does not omit events
+*inside* a page; were that false the observed spacing would be wider than the
+real one and coverage would read high. It was checked against complete archive
+hours and it holds. The second was never written down here, which is most of why
+it went unchecked for so long: that the spacing measured inside a page describes
+the spacing outside it. It does not. Events arrive in dense bursts, and the id
+distance between two bursts runs to thousands where the distance inside one is a
+couple, so spacing taken from a page prices the empty space between bursts at the
+density of a burst. The estimate of what went by then comes out too large and
+coverage reads low — by a margin that varies with the hour, so no constant
+recovers it. The correction belongs in how sequences are split, and until it is
+made no figure derived from this is published.
 """
 
 from __future__ import annotations
@@ -34,11 +42,20 @@ from dataclasses import dataclass, field
 from itertools import pairwise
 from statistics import median
 
-# A boundary between id sequences is not a close call: the bands observed sit
-# billions apart while neighbouring events sit single digits apart, so the two
-# scales differ by around nine orders of magnitude. Any factor from ten to tens
-# of millions partitions this data identically — the value is not tuned, and
-# `test_sequence_split_is_insensitive_to_the_gap_factor` is what keeps that true.
+# This value is load-bearing, and it was documented here as the opposite.
+#
+# A boundary *between bands* is not a close call: the bands observed sit billions
+# apart while neighbouring events sit single digits apart, nine orders of
+# magnitude, and any threshold between them separates the two identically. That
+# was the whole argument, and it left out the scale in the middle: events arrive
+# in dense bursts, and consecutive bursts sit thousands of ids apart. So this
+# factor selects which of the two a "sequence" means. Below the gap between
+# bursts — where it currently sits — every burst becomes its own sequence and
+# spacing is measured inside one. Above it, only a band boundary splits and
+# spacing is measured across bursts, which is what the estimate actually needs.
+# `test_the_gap_factor_decides_which_scale_counts_as_a_sequence` holds that
+# visible; the retired test that claimed the value did not matter was green
+# because its fixture had only the two extreme scales in it.
 DEFAULT_GAP_FACTOR = 100.0
 
 # Deciding whether last cycle's high-water id belongs to a sequence seen now is a
@@ -49,7 +66,11 @@ DEFAULT_GAP_FACTOR = 100.0
 # sequences instead differ in *magnitude* (~12.2e9 against ~15.6e9, i.e. ~22%),
 # while any plausible backlog stays a rounding error against the id itself: 1% of
 # 15.6e9 is ~156 million ids, on the order of a day of feed. So membership is a
-# relative test, and like the gap factor its exact value is not load-bearing.
+# relative test. Its exact value is not load-bearing — but that is asserted here
+# on the strength of the scales it was checked against, not by analogy to the
+# factor above, which carried the same claim and turned out not to deserve it.
+# The scales that could bear on it are a backlog (~1e4 ids) and the gap between
+# bursts (~2.8e3), both negligible against a tolerance of ~1.6e8 ids.
 SAME_SEQUENCE_TOLERANCE = 0.01
 
 
