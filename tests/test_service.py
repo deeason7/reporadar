@@ -12,6 +12,7 @@ import respx
 from conftest import TEST_API_BASE
 from reporadar.config import Settings
 from reporadar.github.events import RawEvent
+from reporadar.ingest import service as service_module
 from reporadar.ingest.poller import effective_interval
 from reporadar.ingest.service import MAX_RATE_LIMIT_PAUSE_S, poll_stream
 
@@ -187,6 +188,68 @@ async def test_a_cycle_with_no_fresh_events_leaves_the_sink_alone(
 
     assert handed_over == [1]  # cycle 2 polled, deduped to nothing, and said nothing
     assert counters.cycles == 2  # the quiet cycle still happened, and still counts
+
+
+@respx.mock
+async def test_a_bounded_run_waits_between_cycles_and_not_after_the_last(
+    settings: Settings, event_dict: dict[str, Any], slept: list[float]
+) -> None:
+    # The interval spaces one cycle from the next, so a run of n cycles owes n-1
+    # waits. Sleeping after the last one waits for a cycle that will never run,
+    # and the caller cannot tell that from a hang — see the single-cycle case
+    # below for how bad that gets. The exact list is asserted rather than its
+    # length: a fix that skipped the *first* wait instead would keep the count.
+    respx.get(EVENTS_URL).mock(side_effect=[_page(event_dict, "a"), _page(event_dict, "b")])
+
+    counters = await poll_stream(settings, _CollectSink(), interval_s=7.0, pages=1, max_cycles=2)
+
+    assert counters.cycles == 2
+    assert slept == [7.0]
+
+
+@respx.mock
+async def test_a_single_cycle_run_returns_without_waiting_at_all(
+    settings: Settings, event_dict: dict[str, Any], slept: list[float]
+) -> None:
+    # The case that makes it a defect rather than an inefficiency: bounded at one
+    # cycle, every wait the run performs is a wait for nothing. The work finishes
+    # immediately and the process then sits for a full interval before returning,
+    # which is indistinguishable from a stuck poll to anyone watching it.
+    respx.get(EVENTS_URL).mock(side_effect=[_page(event_dict, "a")])
+
+    await poll_stream(settings, _CollectSink(), interval_s=60.0, pages=1, max_cycles=1)
+
+    assert slept == []
+
+
+@respx.mock
+async def test_an_unbounded_run_still_waits_after_every_cycle(
+    settings: Settings, event_dict: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The case that must not change, and the one that actually runs in production:
+    # with no bound there is always a next cycle, so every cycle owes its wait.
+    # Guarding the wait on the cycle bound must not leak into the unbounded path.
+    #
+    # Patched at interruptible_sleep rather than at asyncio.sleep, unlike the
+    # bounded tests above: a run with a stop event waits on the event with a
+    # timeout instead of sleeping, so asyncio.sleep is never reached and a double
+    # placed there would record nothing while the loop ran forever.
+    waited: list[float] = []
+    stop = asyncio.Event()
+
+    async def record_and_stop_after_two(seconds: float, event: asyncio.Event | None) -> None:
+        waited.append(seconds)
+        if len(waited) == 2:
+            stop.set()
+
+    monkeypatch.setattr(service_module, "interruptible_sleep", record_and_stop_after_two)
+    respx.get(EVENTS_URL).mock(side_effect=lambda request: _page(event_dict, "a"))
+
+    async with asyncio.timeout(5):
+        counters = await poll_stream(settings, _CollectSink(), interval_s=3.0, pages=1, stop=stop)
+
+    assert counters.cycles == 2
+    assert waited == [3.0, 3.0]  # one wait per cycle, including the last
 
 
 @respx.mock

@@ -62,6 +62,19 @@ async def poll_stream(
     """
     seen = RecentIds(maxlen=seen_window)
     counters = PollCounters()
+
+    def cycles_exhausted() -> bool:
+        """Has the bound been reached? Asked twice, on purpose.
+
+        Once before a cycle starts and once before the wait that follows it. The
+        second is the one that is easy to leave out, and leaving it out is not a
+        tidiness problem: the wait exists to space this cycle from the next one,
+        so after the last cycle it waits for something that never comes. A run
+        bounded at one cycle then spends a whole interval doing nothing before it
+        returns, which reads to a caller as a hang rather than as an interval.
+        """
+        return max_cycles is not None and counters.cycles >= max_cycles
+
     # Fed the whole batch, not just the fresh events: coverage is a question about
     # the feed's own continuity, and dropping the ids we have already stored would
     # punch holes in the very sequence being measured.
@@ -71,7 +84,7 @@ async def poll_stream(
         while True:
             if stop is not None and stop.is_set():
                 break
-            if max_cycles is not None and counters.cycles >= max_cycles:
+            if cycles_exhausted():
                 break
             try:
                 batch = await poll_once(client, pages=pages)
@@ -88,6 +101,10 @@ async def poll_stream(
             counters.record_cycle(fetched=len(batch), fresh=len(fresh), coverage=cycle_coverage)
             if report_every > 0 and counters.cycles % report_every == 0:
                 logger.info("poll progress: %s", counters.as_dict())
+            # Before the interval is even computed, so a finishing run does not
+            # announce a cadence it will never wait out.
+            if cycles_exhausted():
+                break
             sleep_s = effective_interval(interval_s, client.last_poll_interval_s)
             if sleep_s != announced_interval:
                 # Say it once per change rather than every cycle: an operator who

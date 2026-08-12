@@ -173,11 +173,23 @@ async def converge_forever(
     if lookback_days < 1:
         raise ValueError(f"lookback_days must be at least 1, got {lookback_days}")
     counters = ArchiveCounters()
+
+    def passes_exhausted() -> bool:
+        """Has the bound been reached? Asked twice, on purpose.
+
+        Once before a pass starts and once before the wait that follows it. The
+        wait exists to space this pass from the next one, so after the last pass
+        it waits for a pass that never comes — and this interval defaults to
+        fifteen minutes, long enough that a bounded catch-up looks wedged rather
+        than finished.
+        """
+        return max_passes is not None and counters.passes >= max_passes
+
     await create_schema(connection)
     while True:
         if stop is not None and stop.is_set():
             break
-        if max_passes is not None and counters.passes >= max_passes:
+        if passes_exhausted():
             break
         now = clock()
         last_day = now.date()
@@ -194,6 +206,8 @@ async def converge_forever(
             keep_source=keep_source,
             counters=counters,
         )
+        if passes_exhausted():
+            break
         await interruptible_sleep(interval_s, stop)
     logger.info("archive ingest stopped: %s", counters.as_dict())
     return counters

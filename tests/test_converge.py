@@ -297,7 +297,13 @@ async def test_the_loop_stops_after_the_passes_it_was_given(
     )
 
     assert counters.passes == 3
-    assert slept == [42.0, 42.0, 42.0]
+    # Three passes, two waits: the interval spaces one pass from the next, so
+    # there is one fewer of them than there are passes. This used to assert three
+    # and passed, because the loop did sleep a third time -- after the last pass,
+    # waiting out a full interval for a pass that was never going to run. At the
+    # default interval that is a quarter of an hour of a bounded catch-up looking
+    # wedged rather than finished.
+    assert slept == [42.0, 42.0]
     assert "CREATE TABLE IF NOT EXISTS archive_hours" in connection.executed[0][0]
 
 
