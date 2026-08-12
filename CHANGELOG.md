@@ -290,6 +290,19 @@ All notable changes to this project are documented here, per
   progress reporting without silencing the summary written when the run ends.
 
 ### Changed
+- The README no longer publishes a capture ratio. It carried a measured 2.08%, and the estimator
+  behind that number was then checked against complete archive hours: event ids arrive in dense
+  clusters, neighbouring events a couple of ids apart inside one and consecutive clusters thousands
+  apart, and the estimate measured spacing inside a cluster and applied it across the gaps between
+  them. Pricing empty id space at the density of a burst inflates how many events are believed to
+  have gone by, which understates coverage — and it understates it by a margin that varies through
+  the day, so no single correction factor recovers the figure already published. It is bracketed
+  rather than corrected in place, because re-measuring only moves the problem while it is still
+  unsettled which window a single figure is meant to describe, and a second wrong number is harder
+  to withdraw than the first was. The design section is corrected in the same change: the estimate
+  rests on two assumptions rather than the one it named, and the one it did not name is the one
+  that does not hold. No code changes here — this is the documentation catching up with what was
+  measured about it.
 - `backfill` exits `3` when the range it was given did not converge, rather than `0` for any pass
   that ran. Naming an explicit range is a claim that those hours are wanted now, so a pass that
   left an hour for later, or rejected one it could not trust, has not done what was asked — and a

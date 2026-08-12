@@ -24,11 +24,16 @@ template fallback, so no model is ever a point of failure.
 > idempotent topic provisioning; and all four long-running commands shipped as one image behind a
 > compose profile.
 >
-> **Feed coverage has been measured on a real run rather than inferred from the design: 2.08%** for
-> a single poller at three pages per 60-second cycle, over one 30-minute window on 2026-07-31. That
-> is one configuration on one day and has not been repeated. It appears here because the rule is
-> that a measured number is published with its conditions attached — not because it is a settled
-> figure, and not as a claim about what this system captures in general.
+> **Feed coverage carries no published figure right now — `[capture ratio]`.** A measured 2.08%
+> stood here, for a single poller at three pages per 60-second cycle over one 30-minute window on
+> 2026-07-31, until the estimator that produced it was checked against complete archive hours.
+> Event ids arrive in dense clusters — neighbouring events sit a couple of ids apart inside one,
+> while consecutive clusters sit thousands apart — and the estimator measured spacing inside a
+> cluster and then applied it across the gaps between them. That prices empty id space at the
+> density of a burst, so the figure understated coverage, by a margin that itself varies through
+> the day. The number is withdrawn rather than corrected in place, because a re-measurement is
+> only worth publishing once it is settled what window a single figure is meant to describe. The
+> brackets stay until then.
 >
 > Not built yet: the risk and forecasting models, and the dashboards. Nothing is deployed anywhere and
 > nothing is intended to be — this runs locally, and reproducing it from this README is the point.
@@ -52,8 +57,11 @@ would report the mismatch rather than the miss.
 Coverage is therefore estimated from the live feed alone. Events within a returned page are
 consecutive, which makes the spacing between event ids measurable *inside* each page instead of
 configured; the ids elapsed between two cycles then imply how many events occurred, and the share
-the poller actually captured is an **estimated capture ratio**. It is an estimate, it is named as
-one wherever it appears, and it carries one stated assumption: that a returned page is contiguous.
+the poller actually captured is an **estimated capture ratio**. It is an estimate and it is named
+as one wherever it appears, and it rests on two assumptions rather than the one stated here before.
+That a returned page is contiguous: checked, and it holds. That the spacing measured inside a page
+describes the spacing outside it: checked, and it does not — which is why no ratio is published
+above.
 
 ```mermaid
 flowchart LR
