@@ -93,16 +93,69 @@ def test_the_scale_selected_decides_the_spacing_that_gets_measured() -> None:
     assert across_spacing > 10 * IN_BURST_SPACING
 
 
-def test_the_shipped_default_measures_spacing_inside_a_burst() -> None:
-    # Where the shipped default actually falls, pinned rather than left to be
-    # inferred from the two tests above: below the gap between bursts. A page
-    # carrying several bursts is therefore split into one sequence each, and the
-    # spacing that reaches the estimate is the in-burst one. Moving the default
-    # across that boundary changes what the reported ratio means, so it should
-    # not be possible to move it quietly.
+def test_the_shipped_default_measures_spacing_across_bursts() -> None:
+    # Where the shipped default falls, pinned rather than left to be inferred
+    # from the two tests above: above the gap between bursts. A page carrying
+    # several bursts is one sequence, and the spacing that reaches the estimate
+    # is taken across them. Moving the default back below that boundary changes
+    # what the reported ratio means, so it must not be possible to move quietly.
     spans = split_sequences(_bursty(UPPER_BASE), gap_factor=DEFAULT_GAP_FACTOR)
-    assert len(spans) == BURSTS
-    assert all(s.ids_per_event == float(IN_BURST_SPACING) for s in spans)
+    assert len(spans) == 1
+    spacing = spans[0].ids_per_event
+    assert spacing is not None
+    assert spacing > 10 * IN_BURST_SPACING
+
+
+def test_the_gap_factor_must_clear_both_scales() -> None:
+    # The default sits inside a window with a floor and a ceiling, and crossing
+    # either is silent. Too low and every burst is a sequence, so spacing is the
+    # in-burst one. Too high and the two bands merge into one, so an id in one
+    # band gets subtracted from an id in the other -- a number with no meaning,
+    # and the failure this module's sequence splitting exists to prevent. Both
+    # sides are asserted here because only the floor has ever been crossed, and
+    # the ceiling is the one that moves: it is set by how far apart the bands
+    # happen to sit, which is a property of the data and not of the feed's shape.
+    ids = _bursty(LOWER_BASE) + _bursty(UPPER_BASE)
+    assert len(split_sequences(ids, gap_factor=DEFAULT_GAP_FACTOR)) == 2
+    assert len(split_sequences(ids, gap_factor=1_000.0)) == 2 * BURSTS
+    assert len(split_sequences(ids, gap_factor=1.0e10)) == 1
+
+
+def test_a_bursty_page_does_not_read_as_a_collapse_in_coverage() -> None:
+    # End to end, and the reason the split scale is not a detail: a poller that
+    # misses nothing must report that it missed nothing, whether the page it
+    # holds is one smooth run or a handful of bursts. Splitting per burst made
+    # this read as near-total loss, because every burst measured its elapsed
+    # distance from the same previous mark and then divided it by in-burst
+    # spacing -- two compounding errors in the same direction.
+    tracker = CoverageTracker()
+    first = _bursty(UPPER_BASE)
+    tracker.record(first)
+    estimate = tracker.record(_bursty(first[-1] + IN_BURST_SPACING))
+    assert estimate is not None
+    assert 0.9 < estimate < 1.1, estimate
+
+
+def test_one_cycles_estimate_moves_with_where_the_page_falls() -> None:
+    # The residual, stated rather than left to be discovered. Even measuring
+    # spacing across bursts, a cycle that ends mid-gap carries empty id space
+    # that no event will ever fill, and the estimate reads low for it. The
+    # relation is asserted and no factor is: how far the two readings sit apart
+    # depends on how many bursts the fixture holds, which is a property of the
+    # fixture. It is why a single cycle is not a measurement and the reported
+    # figure pools over many.
+    def keeps_up(offset: int) -> float:
+        tracker = CoverageTracker()
+        first = _bursty(UPPER_BASE)
+        tracker.record(first)
+        estimate = tracker.record(_bursty(first[-1] + offset))
+        assert estimate is not None
+        return estimate
+
+    landing_on_an_event = keeps_up(IN_BURST_SPACING)
+    landing_in_a_gap = keeps_up(BETWEEN_BURSTS)
+    assert landing_in_a_gap < landing_on_an_event
+    assert landing_in_a_gap > 0.5, landing_in_a_gap
 
 
 def test_ids_per_event_is_measured_not_assumed() -> None:

@@ -28,11 +28,16 @@ hours and it holds. The second was never written down here, which is most of why
 it went unchecked for so long: that the spacing measured inside a page describes
 the spacing outside it. It does not. Events arrive in dense bursts, and the id
 distance between two bursts runs to thousands where the distance inside one is a
-couple, so spacing taken from a page prices the empty space between bursts at the
-density of a burst. The estimate of what went by then comes out too large and
-coverage reads low — by a margin that varies with the hour, so no constant
-recovers it. The correction belongs in how sequences are split, and until it is
-made no figure derived from this is published.
+couple, so spacing taken from *inside a burst* prices the empty space between
+bursts at the density of a burst. The estimate of what went by then comes out too
+large and coverage reads low — by a margin that varies with the hour, so no
+constant recovers it, and the correction had to go into how sequences are split
+rather than into a factor applied afterwards. It has: a burst is not a sequence,
+only the boundary between id bands is, and spacing is measured across bursts. What
+is left is a per-cycle wobble that depends on where a page happens to fall against
+the bursts, which pooling absorbs and a single cycle does not — so a single
+cycle's estimate is not a measurement. No ratio derived from this is published
+yet; which stretch of time a given ratio describes is a separate open question.
 """
 
 from __future__ import annotations
@@ -42,21 +47,31 @@ from dataclasses import dataclass, field
 from itertools import pairwise
 from statistics import median
 
-# This value is load-bearing, and it was documented here as the opposite.
+# This value is load-bearing, and it has to land between two measured scales.
 #
-# A boundary *between bands* is not a close call: the bands observed sit billions
-# apart while neighbouring events sit single digits apart, nine orders of
-# magnitude, and any threshold between them separates the two identically. That
-# was the whole argument, and it left out the scale in the middle: events arrive
-# in dense bursts, and consecutive bursts sit thousands of ids apart. So this
-# factor selects which of the two a "sequence" means. Below the gap between
-# bursts — where it currently sits — every burst becomes its own sequence and
-# spacing is measured inside one. Above it, only a band boundary splits and
-# spacing is measured across bursts, which is what the estimate actually needs.
-# `test_the_gap_factor_decides_which_scale_counts_as_a_sequence` holds that
-# visible; the retired test that claimed the value did not matter was green
-# because its fixture had only the two extreme scales in it.
-DEFAULT_GAP_FACTOR = 100.0
+# `_group` splits wherever a gap exceeds the typical one by this factor, and the
+# typical gap on a real page is the one *inside* a burst. Three scales matter, not
+# two: ~2 ids between neighbouring events within a burst, ~2,790 between
+# consecutive bursts, and ~3.4e9 between the id bands the feed carries. This
+# factor decides which of the last two counts as a boundary, and only one answer
+# is usable: a burst is not a sequence. Split at the burst boundary and spacing is
+# measured inside a burst, which prices the empty space between bursts at burst
+# density; split only at the band boundary and spacing is measured across them,
+# which is the distance the estimate actually divides.
+#
+# So the value must clear the inter-burst gap and stay under the band gap:
+#
+#     floor     2,790 / 2  ~=   1,400   at or below this, bursts stop merging
+#     ceiling    3.4e9 / 2  ~=  1.7e9   at or above this, two bands merge
+#
+# A million sits ~700x above the floor and ~1,700x below the ceiling. **The
+# ceiling is the side to watch**: it is set by how far apart the two bands happen
+# to sit, so it moves with the data, while the floor is a property of how the feed
+# emits events. Raising this "to be safe" walks toward the ceiling, and merging
+# two bands means subtracting an id in one from an id in the other, which is a
+# number with no meaning. `test_the_gap_factor_must_clear_both_scales` holds both
+# sides visible so neither can be crossed quietly.
+DEFAULT_GAP_FACTOR = 1.0e6
 
 # Deciding whether last cycle's high-water id belongs to a sequence seen now is a
 # *different* question from splitting one page into sequences, and using the gap
@@ -178,6 +193,14 @@ class CoverageTracker:
         next_highs: list[int] = []
         matched: set[int] = set()
 
+        # The split scale decides two things here, not one. It sets the spacing
+        # each span reports, and it sets how many spans lay claim to the same
+        # stretch of id space — because sequence membership is a test of id
+        # magnitude, so every burst in a band matches the same previous mark.
+        # Splitting per burst therefore had each burst measure `elapsed` from that
+        # one origin, and those spans overlap, so the expected total counted the
+        # same ids repeatedly on top of pricing them at burst density. One
+        # sequence per band leaves one span and one elapsed.
         for cycle_ids in _group(current, self.gap_factor):
             span = SequenceSpan.of(cycle_ids)
             priors = [h for h in self._highs if self._same_sequence(h, span)]
