@@ -24,52 +24,34 @@ class PollCounters:
     rate_limited: int = 0  # cycles skipped because the API was rate limiting
     fetched: int = 0  # events pulled from the API (after per-batch dedupe)
     fresh: int = 0  # events new across the run — i.e. actually written
-    # Coverage is an estimate, so it is accumulated as a mean over the cycles that
-    # could produce one rather than as a counter. Cycles that cannot (the first,
-    # or one where the feed did not advance) are excluded rather than scored zero:
-    # counting "no estimate" as "no coverage" would drag the mean toward a number
-    # nothing measured.
-    coverage_samples: int = 0
-    _coverage_sum: float = 0.0
 
     @property
     def duplicates(self) -> int:
         """Events re-seen across cycles (fetched but already in the dedup window)."""
         return self.fetched - self.fresh
 
-    @property
-    def coverage_estimate(self) -> float | None:
-        """Mean estimated share of the feed captured, or ``None`` if never measurable."""
-        if self.coverage_samples == 0:
-            return None
-        return self._coverage_sum / self.coverage_samples
-
-    def record_cycle(self, *, fetched: int, fresh: int, coverage: float | None = None) -> None:
+    def record_cycle(self, *, fetched: int, fresh: int) -> None:
         """Account for one successful cycle."""
         self.cycles += 1
         self.fetched += fetched
         self.fresh += fresh
-        if coverage is not None:
-            self.coverage_samples += 1
-            self._coverage_sum += coverage
 
     def record_rate_limited(self) -> None:
         """Account for one cycle lost to rate limiting (no events fetched)."""
         self.cycles += 1
         self.rate_limited += 1
 
-    def as_dict(self) -> dict[str, float | int | None]:
+    def as_dict(self) -> dict[str, int]:
         """Snapshot including the derived values — the machine-readable seam.
 
-        ``coverage_estimate`` is ``None`` until a cycle can support one, and it
-        is published as null rather than as 0.0: a run that could not measure
-        coverage and a run that captured nothing are different outcomes, and only
-        one of them is a measurement.
+        Every figure here is an exact count of something the poller did. There is
+        deliberately no estimate of what share of the feed those counts represent:
+        the estimator that produced one was retired because its residual error had
+        no explanation, and *how much did we pull* is a different and answerable
+        question from *how much is there*.
         """
-        snapshot: dict[str, float | int | None] = asdict(self)
-        snapshot.pop("_coverage_sum", None)  # accumulator, not a reported figure
+        snapshot: dict[str, int] = asdict(self)
         snapshot["duplicates"] = self.duplicates
-        snapshot["coverage_estimate"] = self.coverage_estimate
         return snapshot
 
 

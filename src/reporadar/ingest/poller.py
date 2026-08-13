@@ -1,9 +1,16 @@
 """Live /events poller: page sweep → dedupe → NDJSON on disk.
 
 The public /events feed is a rolling, pagination-capped window — a single
-poller cannot see everything at peak. The poller's job is *freshness*, and how
-much it misses is measured from the feed's own id continuity (see ``coverage``)
-rather than assumed away.
+poller cannot see everything at peak. The poller's job is *freshness*.
+
+**How much it misses is not measured, and is not assumed away either.** An
+estimator built on the feed's id continuity reported that share until it was
+retired: on live cycles the corrected version was bitwise identical to the
+defective one, the condition for the two to differ is unreachable at the
+endpoint's three-page ceiling, and the error that remained had no known cause.
+What the counters report instead is exact — cycles, events fetched, events fresh
+— and the share of the whole firehose those represent is an open question the
+code declines to answer.
 """
 
 from __future__ import annotations

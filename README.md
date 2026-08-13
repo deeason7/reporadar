@@ -24,16 +24,25 @@ template fallback, so no model is ever a point of failure.
 > idempotent topic provisioning; and all four long-running commands shipped as one image behind a
 > compose profile.
 >
-> **Feed coverage carries no published figure right now — `[capture ratio]`.** A measured 2.08%
-> stood here, for a single poller at three pages per 60-second cycle over one 30-minute window on
-> 2026-07-31, until the estimator that produced it was checked against complete archive hours.
-> Event ids arrive in dense clusters — neighbouring events sit a couple of ids apart inside one,
-> while consecutive clusters sit thousands apart — and the estimator measured spacing inside a
-> cluster and then applied it across the gaps between them. That prices empty id space at the
-> density of a burst, so the figure understated coverage, by a margin that itself varies through
-> the day. The number is withdrawn rather than corrected in place, because a re-measurement is
-> only worth publishing once it is settled what window a single figure is meant to describe. The
-> brackets stay until then.
+> **What share of the firehose this sees is not measured, and is no longer estimated.** A figure
+> stood here — 2.08%, for a single poller at three pages per 60-second cycle over one 30-minute
+> window — produced by estimating the feed's event rate from the spacing between event ids inside
+> each returned page. Checking it against complete archive hours showed why that fails: ids arrive
+> in dense clusters, neighbours a couple of ids apart inside one and consecutive clusters thousands
+> apart, so measuring inside a cluster and applying it across the gaps prices empty id space at the
+> density of a burst.
+>
+> The estimator was corrected. The correction turned out to make no difference on the live feed —
+> a page holds about one cluster, so there is no boundary for the old and new versions to disagree
+> about, and 48 consecutive cycles produced bitwise identical results either way. Nor can it: the
+> endpoint caps at three pages of a hundred, which is smaller than the gap the fix exists to detect.
+> A residual error of roughly 8.6× against an independently measured event rate remains, and no
+> mechanism accounts for it.
+>
+> So the estimate is retired rather than re-measured. What the poller reports now are exact counts
+> — cycles, events fetched, events new — and the question *what fraction of GitHub is that?* is
+> left open and marked open. A number wrong by an unexplained factor is not a rough version of the
+> right number.
 >
 > Not built yet: the risk and forecasting models, and the dashboards. Nothing is deployed anywhere and
 > nothing is intended to be — this runs locally, and reproducing it from this README is the point.
@@ -54,14 +63,23 @@ found no meaningful overlap in the adjacent hours either. Whatever the cause, th
 not act as ground truth for what this poller missed, so a figure derived by reconciling the two
 would report the mismatch rather than the miss.
 
-Coverage is therefore estimated from the live feed alone. Events within a returned page are
+Coverage was therefore estimated from the live feed alone. Events within a returned page are
 consecutive, which makes the spacing between event ids measurable *inside* each page instead of
 configured; the ids elapsed between two cycles then imply how many events occurred, and the share
-the poller actually captured is an **estimated capture ratio**. It is an estimate and it is named
-as one wherever it appears, and it rests on two assumptions rather than the one stated here before.
-That a returned page is contiguous: checked, and it holds. That the spacing measured inside a page
-describes the spacing outside it: checked, and it does not — which is why no ratio is published
-above.
+the poller captured falls out as a ratio. That rested on two assumptions. **That a returned page is
+contiguous: checked, and it holds. That the spacing measured inside a page describes the spacing
+outside it: checked, and it does not.**
+
+**The second one is fatal, and the estimator is retired.** Not because the flaw was found — flaws
+get fixed — but because fixing it changed nothing measurable and the error that remained could not
+be explained. One piece of evidence that had supported keeping it was withdrawn on inspection: the
+arithmetic said to corroborate the correction turned out to be an identity, true for any input, and
+so capable of confirming the result no matter what the estimator did.
+
+**So this project measures how much it pulled, and does not claim to know what fraction that is.**
+Both halves of that are deliberate. The counts are exact and useful for operating the thing; the
+missing denominator is named here rather than quietly dropped, because a capability that was
+removed and one that was never built look identical from outside.
 
 ```mermaid
 flowchart LR
@@ -70,15 +88,16 @@ flowchart LR
     K --> C[Python consumers: validate, dedupe, DLQ]
     C --> TS[(TimescaleDB: hot 90d)]
     L --> D[DuckDB analytics]
-    K -. id spacing per page .-> R[estimated capture ratio]
+    K --> M[exact run counts: cycles, fetched, fresh]
     TS --> G[Grafana: ops + product]
 ```
 
 Design rules that hold everywhere:
 
-- **Coverage is measured, never assumed — and the measurement says what it cannot know.** Where a
-  number cannot be computed honestly the code declines to produce one, rather than returning a
-  plausible zero.
+- **Where a number cannot be computed honestly the code declines to produce one**, rather than
+  returning a plausible zero. This rule cost the project its capture ratio, which is the strongest
+  evidence that it is real: the estimator was already built, already corrected, and already
+  published before the rule was applied to it.
 - **Every model must beat a named dumb baseline on a time-based split** before it ships.
 - **Person-level data is aggregated to repo/ecosystem level** in everything published. No
   individual-maintainer risk pages, ever.
@@ -173,9 +192,10 @@ removing a partition directory is a supported way to reclaim disk, and a loop th
 would re-download those hours for ever, undoing a deliberate act.
 `capture-rate` compares a live sample against one archive hour. It reports the counts and
 refuses to return a ratio when the sample holds events that the archive hour does not — which, on
-the hours measured so far, is what happens, and is why coverage is estimated from the live feed
-instead. It exits non-zero in that case, so a scheduled run cannot record a number that means
-nothing.
+the hours measured so far, is what happens. It exits non-zero in that case, so a scheduled run
+cannot record a number that means nothing. This is the older of the two ways this project tried to
+measure its own coverage; both were retired, and this command survives as the honest report of why
+the first one could not work.
 
 ## Local stack
 

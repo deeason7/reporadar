@@ -46,27 +46,29 @@ def test_as_dict_snapshots_all_fields_including_duplicates() -> None:
         "fetched": 5,
         "fresh": 3,
         "duplicates": 2,
-        "coverage_samples": 0,
-        "coverage_estimate": None,  # never measured — not the same as zero coverage
     }
-    # The running accumulator must not reach the scrape seam: it is an
-    # implementation detail whose value would read as a metric.
-    assert "_coverage_sum" not in c.as_dict()
 
 
-def test_coverage_estimate_averages_only_the_cycles_that_measured_one() -> None:
-    # Cycles that cannot produce an estimate (the first of a run, or one where the
-    # feed did not advance) are excluded, not scored zero. Counting "no estimate"
-    # as "no coverage" would drag the mean toward a number nothing measured — the
-    # same conflation the capture KPI already made once.
+def test_poll_counters_report_no_estimate_of_the_share_of_the_feed_seen() -> None:
+    # The capture-ratio estimate was retired. This asserts the *absence* rather than
+    # trusting the snapshot above to stay exhaustive: that dict is an equality check,
+    # so a re-added estimate would fail it -- but it would fail it as "an unexpected
+    # key", which reads as a test needing an update. Naming the retired field makes
+    # the failure say what it means.
     c = PollCounters()
-    c.record_cycle(fetched=5, fresh=5, coverage=None)
-    c.record_cycle(fetched=5, fresh=5, coverage=0.4)
-    c.record_cycle(fetched=5, fresh=5, coverage=0.6)
+    c.record_cycle(fetched=5, fresh=5)
+    c.record_cycle(fetched=5, fresh=4)
 
-    assert c.cycles == 3
-    assert c.coverage_samples == 2
-    assert c.coverage_estimate == 0.5  # not 0.333 — the None cycle is absent, not zero
+    snapshot = c.as_dict()
+    for retired in ("coverage_estimate", "coverage_samples", "_coverage_sum"):
+        assert retired not in snapshot, (
+            f"{retired} is back in the counters; it was retired because its residual "
+            "error had no explanation -- reinstating it is a decision, not a fix"
+        )
+    # Every reported figure is an exact count of something that happened.
+    assert all(isinstance(v, int) for v in snapshot.values())
+    assert snapshot["fetched"] == 10
+    assert snapshot["duplicates"] == 1
 
 
 def test_consume_counters_as_dict_snapshots_all_fields_including_duplicates() -> None:
