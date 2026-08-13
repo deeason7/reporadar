@@ -1,116 +1,170 @@
-# RepoRadar — ecosystem intelligence for open source
+# RepoRadar — ingesting and measuring GitHub's public event feed
 
-RepoRadar ingests the public GitHub event firehose and turns it into three answers that
-engineering teams actually need:
+RepoRadar reads GitHub's public event feed two ways — the live `/events` API and the hourly
+[GH Archive](https://www.gharchive.org/) — reconciles what landed against a record of what was
+supposed to, aggregates it into daily marts, and charts day-over-day movement. It runs locally, end
+to end: an empty directory to a provisioned dashboard in the commands below.
 
-1. **"Is this project's momentum real?"** — trend detection with fake-star / coordinated-campaign
-   screening, evaluated as alert precision under an explicit review budget.
-2. **"Which of our dependencies are at risk of abandonment?"** — survival-analysis risk scores
-   (who maintains what we depend on, and is the project decaying?), backtested for warning lead time.
-3. **"What actually causes adoption?"** — event studies on natural experiments: license changes,
-   front-page moments, CVE disclosures.
+The pipeline was the instrument. It was pointed at one question about the feed, that question now has
+a measured answer, and the project is closed on it.
 
-The core is deliberately boring and statistical: pipelines, reconciliation, baselines,
-calibration. A local-LLM layer will eventually write weekly ecosystem briefs — with a plain
-template fallback, so no model is ever a point of failure.
+## What the feed turned out to be
 
-> **Status:** early development, and ingestion is the half that exists. In place today: a live
-> `/events` poller with bounded deduplication, run counters, and respect for the cadence the API
-> itself asks for; an always-on capture service writing hourly NDJSON and publishing to Kafka,
-> keeping whatever the event envelope refuses in a rejects file rather than dying on it; a
-> validating consumer that stores events in TimescaleDB and dead-letters whatever will not decode;
-> idempotent GH Archive hour downloads converted into a partitioned Parquet lake with an hours
-> ledger, kept converged by a level-triggered loop that reclaims each hour's compressed source once
-> the record of it is written; `verify` to check the store against that ledger in both directions;
-> idempotent topic provisioning; and all four long-running commands shipped as one image behind a
-> compose profile.
->
-> **What share of the firehose this sees is not measured, and is no longer estimated.** A figure
-> stood here — 2.08%, for a single poller at three pages per 60-second cycle over one 30-minute
-> window — produced by estimating the feed's event rate from the spacing between event ids inside
-> each returned page. Checking it against complete archive hours showed why that fails: ids arrive
-> in dense clusters, neighbours a couple of ids apart inside one and consecutive clusters thousands
-> apart, so measuring inside a cluster and applying it across the gaps prices empty id space at the
-> density of a burst.
->
-> The estimator was corrected. The correction turned out to make no difference on the live feed —
-> a page holds about one cluster, so there is no boundary for the old and new versions to disagree
-> about, and 48 consecutive cycles produced bitwise identical results either way. Nor can it: the
-> endpoint caps at three pages of a hundred, which is smaller than the gap the fix exists to detect.
-> A residual error of roughly 8.6× against an independently measured event rate remains, and no
-> mechanism accounts for it.
->
-> So the estimate is retired rather than re-measured. What the poller reports now are exact counts
-> — cycles, events fetched, events new — and the question *what fraction of GitHub is that?* is
-> left open and marked open. A number wrong by an unexplained factor is not a rough version of the
-> right number.
->
-> Not built yet: the risk and forecasting models, and the dashboards. Nothing is deployed anywhere and
-> nothing is intended to be — this runs locally, and reproducing it from this README is the point.
-> The changelog tracks what is actually in place.
+**The public event feed is overwhelmingly automated, and there is nothing worth classifying, because
+the base rate already answers the question.**
 
-## The honest-ingestion design
+The setup was fixed before anything was scored, so it could not be chosen to fit. The unit is one
+repository-day, not one event — a per-event unit lets the highest-volume repositories decide the
+score by themselves. Three days were used to fit (2026-07-22, 07-27, 07-28) and one held out
+entirely (2026-07-29: 3,978,401 events across 555,841 repositories). There is no ground truth for
+"automated", so the label is named as the proxy it is: exactly one distinct account, and at least
+twenty events.
 
-GitHub's `/events` API is a **fast but lossy** window: pagination caps what one poller sees at
-peak, so a single poller necessarily misses events. [GH Archive](https://www.gharchive.org/)
-publishes an hourly record of public events. The obvious design is to reconcile one against the
-other and report the difference as a capture rate.
+Among repository-days carrying twenty or more events on the held-out day, **95.5% already have
+exactly one account** — 23,155 of 24,253. Predicting that for every one of them scores precision
+0.9547, recall 1.000, **F1 0.9768**. The cheap repository-name pattern this analysis was built to
+test reaches precision 0.9889: **a lift of 1.04× over guessing**. Combining the two is worse than the
+better of them, because the name rule's 0.81 recall drags down a rule that recalls everything.
 
-**That design is not used here, and the reason was measured rather than assumed.** In the hours
-sampled, the live feed and the published archive did not share events: none of a live sample's
-event ids appeared in the archive hour covering the same period, and matching instead on the
-commit SHA carried by a push — a value that cannot differ between two records of the same event —
-found no meaningful overlap in the adjacent hours either. Whatever the cause, the archive could
-not act as ground truth for what this poller missed, so a figure derived by reconciling the two
-would report the mismatch rather than the miss.
+So the feed is not a population containing automation. It is automation, carrying a trace of
+everything else. Once volume is high enough to be worth looking at, single-actor is the default, and
+anyone consuming this feed can discard the automated bulk with a counter and no model at all.
 
-Coverage was therefore estimated from the live feed alone. Events within a returned page are
-consecutive, which makes the spacing between event ids measurable *inside* each page instead of
-configured; the ids elapsed between two cycles then imply how many events occurred, and the share
-the poller captured falls out as a ratio. That rested on two assumptions. **That a returned page is
-contiguous: checked, and it holds. That the spacing measured inside a page describes the spacing
-outside it: checked, and it does not.**
+### The caveat that generalises
 
-**The second one is fatal, and the estimator is retired.** Not because the flaw was found — flaws
-get fixed — but because fixing it changed nothing measurable and the error that remained could not
-be explained. One piece of evidence that had supported keeping it was withdrawn on inspection: the
-arithmetic said to corroborate the correction turned out to be an identity, true for any input, and
-so capable of confirming the result no matter what the estimator did.
+The pattern that looked decisive matches **13.97% of repository-days** and **69.81% of events** on
+the same day. Weighted by events it looks like a thirteenfold separation. Measured per
+repository-day, where the claim actually lives, it adds 3.4 percentage points to a 95.5% base rate.
 
-**So this project measures how much it pulled, and does not claim to know what fraction that is.**
-Both halves of that are deliberate. The counts are exact and useful for operating the thing; the
-missing denominator is named here rather than quietly dropped, because a capability that was
-removed and one that was never built look identical from outside.
+**A share-of-events figure is a claim about volume, not about population.** That is how a 1.04×
+effect presents itself as 13×, and it applies to every rate on this page.
+
+### No single number answers "how much of it is automated"
+
+| day | automated share of events | share of repositories |
+|---|---|---|
+| 2026-07-22 | 68.96% | 3.05% |
+| 2026-07-27 | 72.53% | 3.21% |
+| 2026-07-28 | 73.78% | 3.64% |
+| 2026-07-29 | 74.60% | 4.17% |
+
+Four days, moving one way on both columns, a spread of 5.64 points. Four points is not a trend, but
+it is a refusal to be a constant — which is enough to retire the headline figure. Any single number
+quoted for this is a number about a day.
+
+### What stays clean
+
+`WatchEvent` is **0.033%** of everything published, and **99.98%** of the 5,258 stars observed over
+four complete days land outside the automated population — one in 5,258 does not. The human-attention
+signal here is tiny and it is uncontaminated, which is the property that makes ranking on distinct
+accounts work at all.
+
+### The comparison that had to be thrown away
+
+The first version of this had a baseline that could not lose. The label was "one account **and**
+twenty or more events"; the baseline was a threshold on event count, and the search picked twenty —
+the label's own constant. The baseline did not compete with the label, it contained half of it, and
+its recall came back as exactly 1.0000.
+
+Nothing in the output said "leak". An F1 of 0.9768 looks like a strong result, and the only tell was
+a recall of *exactly* 1.0000 at a threshold landing *exactly* on the label's constant. A metric that
+cannot fail is not a weak metric — it is a different object, and it is indistinguishable from a good
+result until you ask what it would print if the claim were false. The run above removes the leak by
+making volume a filter rather than a feature: among repository-days above twenty events, does the
+name predict a single account? That question has an honest answer, and the answer is *barely*.
+
+## How it is built
 
 ```mermaid
 flowchart LR
-    GH[GitHub /events] -->|async poller, ETag-aware| K[Kafka]
-    GA[GH Archive hourly] -->|batch ingest| L[Parquet lake]
-    K --> C[Python consumers: validate, dedupe, DLQ]
-    C --> TS[(TimescaleDB: hot 90d)]
-    L --> D[DuckDB analytics]
-    K --> M[exact run counts: cycles, fetched, fresh]
-    TS --> G[Grafana: ops + product]
+    GH[GitHub /events] -->|ETag-aware, cadence-honest| S[serve]
+    S --> N[hourly NDJSON]
+    S --> K[Kafka: versioned envelope, keyed by repo id]
+    K --> C[consume: validate, dedupe, dead-letter]
+    C --> TS[(TimescaleDB events)]
+    GA[GH Archive hourly] --> A[archive-serve: converging ingest]
+    A --> L[Parquet lake]
+    A --> H[(hours ledger)]
+    L -->|dbt over DuckDB| M[(marts: repo, ecosystem, actor)]
+    H --> M
+    M --> G[Grafana: ops + trending]
+    H --> G
 ```
 
-Design rules that hold everywhere:
+Two paths, deliberately separate. The live path is a poller that honours the cadence the API asks
+for, deduplicates within a bounded window so a long run is not a slow memory leak, writes fresh
+events into hourly NDJSON files that mirror the archive layout, and publishes them to Kafka in a
+versioned envelope keyed by repository id, so one repository's events stay in order. A consumer
+validates every message against that wire contract, stores what decodes into a TimescaleDB
+hypertable, and routes what does not to a dead-letter topic with a triage reason attached, so an
+operator reads a reason rather than a stack trace.
 
-- **Where a number cannot be computed honestly the code declines to produce one**, rather than
-  returning a plausible zero. This rule cost the project its capture ratio, which is the strongest
-  evidence that it is real: the estimator was already built, already corrected, and already
-  published before the rule was applied to it.
-- **Every model must beat a named dumb baseline on a time-based split** before it ships.
-- **Person-level data is aggregated to repo/ecosystem level** in everything published. No
-  individual-maintainer risk pages, ever.
+The archive path downloads published hours, converts them into a partitioned Parquet lake, and
+records each hour in a ledger. A level-triggered loop keeps the two converged: it asks the ledger
+what is outstanding rather than following a schedule, so downtime, a partial failure and an hour
+published late all resolve on the next pass. `verify` checks the ledger against the files in both
+directions, and `repair-lake` acts on what it finds.
 
-## Development
+Everything published is built from the lake by dbt, at three grains — per repository per day, per
+day for the whole ecosystem, per account per day — plus a trending model that ranks movement in
+distinct accounts. The dashboards are files in this repository, provisioned into Grafana on startup.
 
-```bash
-make setup        # uv sync + install pre-commit hooks
-make lint test    # zero-warning gate: ruff, mypy --strict, pytest
-```
+Three commitments hold everywhere in it:
 
-Python 3.12; dependencies and the toolchain are managed with [uv](https://docs.astral.sh/uv/).
+- **Where a number cannot be computed honestly, the code declines to produce one** rather than
+  returning a plausible zero. This cost the project a headline metric; see below.
+- **Any model has to beat a named dumb baseline on a time-based split before it ships.** Exactly one
+  candidate ever reached that gate, and what it added over the baseline was 1.04×. That is the
+  finding above.
+- **Person-level data is aggregated to repository or ecosystem level in everything published**, and
+  the database enforces it rather than a convention.
+
+## Two things this deliberately does not have
+
+### It does not report what share of the feed it sees
+
+GitHub's `/events` API is a fast but lossy window: pagination caps what one poller sees at peak, so a
+single poller necessarily misses events. The obvious design reconciles the live feed against the
+published archive and reports the difference as a capture rate.
+
+**That design is not used, and the reason was measured rather than assumed.** In the hours sampled,
+the live feed and the published archive did not share events: none of a live sample's event ids
+appeared in the archive hour covering the same period, and matching instead on the commit SHA
+carried by a push — a value that cannot differ between two records of the same event — found no
+meaningful overlap in the adjacent hours either. Whatever the cause, the archive could not act as
+ground truth for what this poller missed, so a figure derived by reconciling the two would report the
+mismatch rather than the miss.
+
+Coverage was therefore estimated from the live feed alone, and a figure was published: 2.08%, for one
+poller at three pages per 60-second cycle over a single 30-minute window. It rested on two
+assumptions. That a returned page is contiguous — checked, and it holds. That the spacing between
+event ids measured *inside* a page describes the spacing *outside* it — checked, and it does not.
+Ids arrive in dense clusters, neighbours a couple of ids apart inside one and consecutive clusters
+thousands apart, so measuring inside a cluster and applying it across the gaps prices empty id space
+at the density of a burst.
+
+**The estimator was fixed, and then removed anyway.** The fix changes nothing on the live feed: a
+page spans about one cluster, so there is no boundary for the two versions to disagree about, and 48
+consecutive cycles produced results identical to the last float bit. Nor can it, at any setting — the
+endpoint refuses a fourth page and caps a hundred per page, which is smaller than the gap the fix
+exists to detect. What remained was a residual error of roughly 8.6× against an independently
+measured event rate, with no mechanism behind it. One piece of evidence that had supported keeping
+the estimator was withdrawn on inspection: the arithmetic said to corroborate the correction turned
+out to be an identity, true for any input, and so incapable of failing.
+
+So the estimate is retired and the module that computed it is deleted. What the poller reports is
+exact counts — cycles, events fetched, events new — and the question *what fraction of GitHub is
+that?* is left open and named as open. **A number wrong by an unexplained factor is not a rough
+version of the right number.** It is named here rather than quietly dropped, because a capability
+that was removed and one that never existed look identical from outside.
+
+### It is not deployed anywhere
+
+This runs on one machine and stops there. Hosted deployment was in scope and was cut under a
+zero-cost constraint: every free option either loses its disk between restarts, sleeps on a timer
+that a capture pipeline would end up measuring instead of GitHub, or requires a card. The goal is
+recorded as missed rather than redefined into one that was met. Reproducing the stack from this
+README is what the project offers instead, and the commands below are the whole of it.
 
 ## Usage
 
@@ -137,14 +191,17 @@ It logs a progress line every `--report-every` cycles — default 60, `0` to sil
 more on exit. The unit is cycles rather than seconds because GitHub sets the cycle length: it
 asks for 60s between polls and `--interval-s` cannot go under that, so the default is about an
 hour before the first line and lowering `--interval-s` does not shorten the wait.
+
 `consume` is the other half: it reads the stream into the database, sending anything that
 will not decode to the dead-letter topic, and stops on the same signals. It needs the local
 stack running and `REPORADAR_POSTGRES_DSN` set.
+
 `provision` creates the topics the stream needs. It is idempotent, so re-running it is free,
 and it never alters a topic that already exists — if one is sized differently it says so and
 leaves it alone. `provision --check` reports without creating and exits non-zero when the
 broker is not ready, which makes it usable as a deploy gate. The reading commands verify the
 topics before they start, so a fresh broker fails immediately and says what to run.
+
 `archive-serve` keeps the columnar store converged on the published archive: it asks the hours
 record what is outstanding, converts those hours a few at a time, and repeats on an interval.
 There is no schedule and so no missed run — downtime, a partial failure and an hour published
@@ -156,10 +213,12 @@ hours are wanted now, and a caller that branches on the exit code would otherwis
 range as a finished one. An hour the publisher never published does not count against it: that is
 a settled answer rather than an unfinished job. Both need `REPORADAR_POSTGRES_DSN` and no broker
 at all.
+
 Both also remove each hour's compressed source once the record of it is written, reporting the
 bytes reclaimed: the columnar copy is what the record points at, while the source is a cache of a
 file the publisher still serves, and keeping both costs two and a half times the disk. Pass
 `--keep-source` when the raw hour is the thing you want to look at.
+
 `verify` compares the hours record against the columnar store. It exits `3` when the record
 claims an hour that is not on disk — the failure that matters, because nothing revisits a settled
 hour, so such a gap is permanent and every coverage number reports it as complete. A file that no
@@ -191,12 +250,13 @@ range covering thirty-two broken hours reported forty-one due, forty-one ingeste
 outstanding, and the same thirty-two failures before and after. The loop is left that way on purpose:
 removing a partition directory is a supported way to reclaim disk, and a loop that checked the files
 would re-download those hours for ever, undoing a deliberate act.
+
 `capture-rate` compares a live sample against one archive hour. It reports the counts and
 refuses to return a ratio when the sample holds events that the archive hour does not — which, on
 the hours measured so far, is what happens. It exits non-zero in that case, so a scheduled run
-cannot record a number that means nothing. This is the older of the two ways this project tried to
-measure its own coverage; both were retired, and this command survives as the honest report of why
-the first one could not work.
+cannot record a number that means nothing. This is the older of the two attempts to measure the
+project's own coverage; both were retired, and this command survives as the honest report of why the
+first one could not work.
 
 ## Local stack
 
@@ -340,16 +400,12 @@ measures **distinct accounts, not stars and not event volume**, and both exclusi
 rather than assumed.
 
 **Stars are not available to rank on** — but not for the obvious reason, and the difference matters
-enough to state. Across 96 complete archive hours (15.8 million events), star events are **0.033%**
-of everything published, which looks like a feed that does not carry stars. It is not. On
-repositories where **five or more accounts** are active they are **1.04%** — thirty-one times higher —
-and the whole event mix there looks like ordinary software development rather than the 94% pushes the
-raw total suggests.
-
-The reason the two figures differ is the denominator. **Roughly two thirds of all events go to
-single-account repositories with generated six-letter names**, from a population of about a million
-accounts pushing a median of twice each. A share of the total is therefore a statement about that
-population, not about the ecosystem — which is worth remembering for every rate on this page.
+enough to state. Across 96 complete archive hours (15,827,495 events), star events are **0.033%** of
+everything published, which looks like a feed that does not carry stars. It is not. On repositories
+where **five or more accounts** are active they are **1.041%** — thirty-one times higher — and the
+whole event mix there looks like ordinary software development rather than the 94% pushes the raw
+total suggests. The reason the two figures differ is the denominator, which is the same effect the
+finding at the top of this page turns on.
 
 What does rule stars out is **density per repository per day**: about 1,300 star events a day across
 the entire feed means most repositories have no star on most days, so a day-over-day ranking built on
@@ -370,13 +426,18 @@ counts as zero rather than unknown — which is only correct *because* that day 
 complete.
 
 Repositories qualify at **five distinct accounts** on either side of the comparison, a floor chosen
-from the measured distribution rather than picked for roundness: 96% of repository-days have exactly
-one account and the highest count observed on a day is 59, so a lower floor buries the collaborative
-repositories among hundreds of thousands of single-account ones. The threshold is a setting, not a
-literal, because the right value depends on how much of the feed the lake holds.
+from the measured distribution rather than picked for roundness: 96% of all repository-days have
+exactly one account and the highest count observed on a day is 59, so a lower floor buries the
+collaborative repositories among hundreds of thousands of single-account ones. The threshold is a
+setting, not a literal, because the right value depends on how much of the feed the lake holds.
+
+That floor turned out to be doing a second job nobody designed it for: five accounts is
+approximately where the automated population stops and the human one starts. It was chosen to
+control list length, and it is recorded as luck rather than foresight, because the next person to
+change it needs to know what else it now carries.
 
 **No judgement is attached to a rise.** Whether movement is genuine interest or manufactured is a
-question about account quality and coordination between accounts, and neither is modelled yet.
+question about account quality and coordination between accounts, and the ranking models neither.
 Nothing in the model or the dashboard says organic, suspicious, or otherwise — the output is the
 movement and the counts behind it.
 
@@ -411,6 +472,22 @@ may not read the raw event store; both refuse it at the database, not by convent
 turns the promise below into something enforced — a panel charting the busiest accounts is one query
 away from being written, and a `permission denied` away from working. Continuous integration checks
 the same boundary a second way, by rejecting any panel whose SQL names those tables at all.
+
+## Development
+
+```bash
+make setup        # uv sync + install pre-commit hooks
+make lint test    # zero-warning gate: ruff, mypy --strict, pytest
+```
+
+Python 3.12; dependencies and the toolchain are managed with [uv](https://docs.astral.sh/uv/).
+
+The gate is clean at close: ruff with no findings, `mypy --strict` over 57 source files with no
+issues, and 346 passing tests with one skipped — 4,820 lines of source against 7,425 lines of test.
+Several of those tests check this README rather than the code: exit codes named in the prose are read
+back out of the command definitions, and a documented command that does not exist fails the build.
+Every check has a companion that plants the defect it looks for and asserts it is reported, because a
+check nobody has watched fail is not a check. The changelog records what each change did and why.
 
 ## Compliance
 
