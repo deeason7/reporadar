@@ -3,10 +3,18 @@
 A long-running ingester has to be observable: how many events it pulled, how
 many survived dedup, how many cycles it lost to rate limiting, how many messages
 it had to dead-letter. These counters are monotonic within a run (they only ever
-climb), snapshotted for a structured log line now and a Prometheus scrape later
-(``as_dict`` is that seam). ``PollCounters`` covers the live poller (produce
-side); ``ConsumeCounters`` covers the stream consumer (read side). Silent failure
-is the one unforgivable production sin, so each stage reports what it actually did.
+climb) and are snapshotted for a structured log line. ``PollCounters`` covers the
+live poller (produce side); ``ConsumeCounters`` covers the stream consumer (read
+side). Silent failure is the one unforgivable production sin, so each stage
+reports what it actually did.
+
+``as_dict`` is a **serialisation** seam, not an exposition one. This docstring
+said otherwise for most of the project's life: it named ``as_dict`` as the seam
+for "a Prometheus scrape later". It is not one. These are coroutine locals
+returned when a run *ends*, so for the always-on service -- designed to run
+indefinitely -- they become reachable exactly once, when it stops. Whatever
+exports run metrics has to read them while the run is still going, which is a
+different seam than this one, and naming this one early is why nobody checked.
 """
 
 from __future__ import annotations
