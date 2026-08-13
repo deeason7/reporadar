@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from reporadar.github.events import dedupe, iter_ndjson, parse_event
+from reporadar.github.events import dedupe, iter_ndjson, parse_event, parse_page
 
 
 def test_parse_event_from_dict(event_dict: dict[str, Any]) -> None:
@@ -67,3 +67,60 @@ def test_dedupe_preserves_first_occurrence_order(event_dict: dict[str, Any]) -> 
     first = parse_event({**event_dict, "id": "a"})
     second = parse_event({**event_dict, "id": "b"})
     assert dedupe([first, second, first, second]) == [first, second]
+
+
+# The redacted-repo shape below is not invented. It is the envelope of a real item
+# the live feed served on 2026-08-12, and an identical one sits in the GH Archive
+# hour 2026-07-22-23 at line 38992 (id 12166351577). The measured rate across three
+# archive hours is 1 in 488,274 events -- about two per million, which for an
+# always-on poller is one every 29 to 36 hours.
+REDACTED_REPO_EVENT: dict[str, Any] = {
+    "id": "12166351577",
+    "type": "ForkEvent",
+    "actor": {"id": 9384210, "login": "octo-forker"},
+    "repo": {},  # blanked upstream: the repository is no longer publicly visible
+    "public": False,
+    "created_at": "2026-07-22T23:14:07Z",
+    "payload": {"forkee": {"private": True}},
+}
+
+
+def test_parse_page_keeps_the_good_events_when_one_item_is_redacted(
+    event_dict: dict[str, Any],
+) -> None:
+    # The whole point: one bad item used to end the run, because the page was built
+    # in a list comprehension and the exception escaped the sweep.
+    events, rejected = parse_page([event_dict, REDACTED_REPO_EVENT, {**event_dict, "id": "2"}])
+
+    assert [e.id for e in events] == ["45000000001", "2"]
+    assert len(rejected) == 1
+
+
+def test_parse_page_keeps_the_rejected_item_whole(event_dict: dict[str, Any]) -> None:
+    # A reason without the item cannot be replayed and cannot be re-read when the
+    # reason turns out to be wrong about itself.
+    _, rejected = parse_page([REDACTED_REPO_EVENT])
+
+    assert rejected[0].raw == REDACTED_REPO_EVENT
+    assert "repo" in rejected[0].reason  # names the field that failed, for triage
+
+
+def test_parse_page_is_empty_in_both_halves_for_an_empty_page() -> None:
+    assert parse_page([]) == ([], [])
+
+
+def test_redaction_is_not_corruption(event_dict: dict[str, Any]) -> None:
+    # Everything except `repo` is intact and well-formed, which is why this is a
+    # model overclaiming rather than a feed misbehaving: GitHub blanks the repo
+    # object when a repository goes private and leaves the rest alone. Asserting it
+    # here so a future reader does not "fix" this by hardening the parser against
+    # garbage -- there is no garbage.
+    _, rejected = parse_page([REDACTED_REPO_EVENT])
+    raw = rejected[0].raw
+
+    assert raw["id"] == "12166351577"
+    assert raw["type"] == "ForkEvent"
+    assert raw["actor"]["login"] == "octo-forker"
+    assert raw["created_at"].endswith("Z")
+    assert raw["payload"]["forkee"]["private"] is True
+    assert raw["repo"] == {}  # the one field that is gone

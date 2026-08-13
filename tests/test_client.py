@@ -35,7 +35,7 @@ def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 async def test_sends_auth_and_user_agent(settings: Settings, event_dict: dict[str, Any]) -> None:
     route = respx.get(EVENTS_URL).mock(return_value=httpx.Response(200, json=[event_dict]))
     async with GitHubClient(settings) as client:
-        events = await client.list_public_events()
+        events, _ = await client.list_public_events()
 
     assert len(events) == 1
     sent = route.calls.last.request
@@ -54,8 +54,8 @@ async def test_etag_round_trip_treats_304_as_empty(
         ]
     )
     async with GitHubClient(settings) as client:
-        first = await client.list_public_events()
-        second = await client.list_public_events()
+        first, _ = await client.list_public_events()
+        second, _ = await client.list_public_events()
 
     assert len(first) == 1
     assert second == []  # 304 → nothing new, and it didn't cost rate limit
@@ -127,7 +127,7 @@ async def test_a_transient_server_error_is_retried(
         side_effect=[httpx.Response(500), httpx.Response(200, json=[event_dict])]
     )
     async with GitHubClient(settings) as client:
-        events = await client.list_public_events()
+        events, _ = await client.list_public_events()
 
     assert len(events) == 1  # the caller never learns the blip happened
     assert sleeps == [2.0]  # and it backed off first, rather than retrying hot
@@ -142,7 +142,7 @@ async def test_a_transport_error_is_retried(
         side_effect=[httpx.ConnectError("connection reset"), httpx.Response(200, json=[event_dict])]
     )
     async with GitHubClient(settings) as client:
-        events = await client.list_public_events()
+        events, _ = await client.list_public_events()
 
     assert len(events) == 1
     assert sleeps == [2.0]

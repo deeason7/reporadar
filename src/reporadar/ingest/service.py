@@ -25,6 +25,7 @@ from reporadar.ingest.dedup import DEFAULT_SEEN_WINDOW, RecentIds
 from reporadar.ingest.metrics import PollCounters
 from reporadar.ingest.poller import MAX_RATE_LIMIT_PAUSE_S, effective_interval, poll_once
 from reporadar.ingest.signals import interruptible_sleep
+from reporadar.ingest.sinks import write_rejects
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,11 @@ async def poll_stream(
     """
     seen = RecentIds(maxlen=seen_window)
     counters = PollCounters()
+    # One file for the whole run rather than one per cycle: at ~2 rejects per
+    # million events these would otherwise be thousands of empty files, and the
+    # question they answer ("what has the feed been refusing lately?") is a
+    # question about the run, not about a cycle.
+    rejects_path = settings.live_dir / "rejects.ndjson"
 
     def cycles_exhausted() -> bool:
         """Has the bound been reached? Asked twice, on purpose.
@@ -82,7 +88,7 @@ async def poll_stream(
             if cycles_exhausted():
                 break
             try:
-                batch = await poll_once(client, pages=pages)
+                batch, rejected = await poll_once(client, pages=pages)
             except RateLimitedError as exc:
                 pause = min(exc.retry_after_s, MAX_RATE_LIMIT_PAUSE_S)
                 counters.record_rate_limited()
@@ -92,7 +98,17 @@ async def poll_stream(
             fresh = [event for event in batch if seen.add(event.id)]
             if fresh:
                 await sink(fresh)
-            counters.record_cycle(fetched=len(batch), fresh=len(fresh))
+            if rejected:
+                write_rejects(rejects_path, rejected)
+                # Warn, not info: this is the path that used to end the run, and an
+                # operator who never sees it cannot tell a feed that stopped
+                # redacting from a capture that stopped noticing.
+                logger.warning(
+                    "%d feed item(s) would not validate; kept in %s",
+                    len(rejected),
+                    rejects_path.name,
+                )
+            counters.record_cycle(fetched=len(batch), fresh=len(fresh), rejected=len(rejected))
             if report_every > 0 and counters.cycles % report_every == 0:
                 logger.info("poll progress: %s", counters.as_dict())
             # Before the interval is even computed, so a finishing run does not

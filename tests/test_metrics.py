@@ -46,6 +46,7 @@ def test_as_dict_snapshots_all_fields_including_duplicates() -> None:
         "fetched": 5,
         "fresh": 3,
         "duplicates": 2,
+        "rejected": 0,
     }
 
 

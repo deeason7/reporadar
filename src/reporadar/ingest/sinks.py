@@ -17,13 +17,35 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC
 from pathlib import Path
 
-from reporadar.github.events import RawEvent
+from reporadar.github.events import RawEvent, RejectedItem
 
 logger = logging.getLogger(__name__)
 
 EventSink = Callable[[Sequence[RawEvent]], Awaitable[None]]
 """An async consumer of a batch of fresh events. Defined here as well as in
 ``service`` so a sink module need not import the loop it feeds."""
+
+
+def write_rejects(path: Path, rejected: Sequence[RejectedItem]) -> None:
+    """Append feed items that would not validate, with the reason each failed.
+
+    Append-only and created on first use, so a run that never meets one leaves no
+    empty file to explain. Synchronous because the volume is a rounding error --
+    the measured rate is about two per million events -- and an async write here
+    would buy nothing while adding a way for the last few rejects of a run to be
+    lost at shutdown.
+
+    Deliberately *not* the same file as the events: a reject is not an event, and
+    a consumer reading the capture must not have to filter them out. The capture
+    is documented as the only copy, so the rejects need somewhere to be that is
+    still inside it.
+    """
+    if not rejected:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        for item in rejected:
+            fh.write(item.model_dump_json() + "\n")
 
 
 class HourlyNdjsonSink:

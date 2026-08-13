@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Sequence
 from typing import Any
@@ -311,3 +312,84 @@ def test_without_server_guidance_the_configured_interval_stands() -> None:
     # there is no guidance to honour — inventing a default here would be a
     # number nothing measured.
     assert effective_interval(10.0, None) == 10.0
+
+
+# See tests/test_events.py for provenance: this is a real item's envelope, not a
+# constructed one. `repo` is blanked upstream when a repository goes private.
+_REDACTED = {
+    "id": "12166351577",
+    "type": "ForkEvent",
+    "actor": {"id": 9384210, "login": "octo-forker"},
+    "repo": {},
+    "public": False,
+    "created_at": "2026-07-22T23:14:07Z",
+    "payload": {"forkee": {"private": True}},
+}
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_one_redacted_event_does_not_end_the_run(
+    settings: Settings, event_dict: dict[str, Any], slept: list[float]
+) -> None:
+    # This is the regression that matters. The page was built in a list
+    # comprehension, so a single item the envelope refused raised out of the sweep
+    # and ended an always-on service -- at the measured rate, about every 29 to 36
+    # hours. The run must now continue, and the good events on the same page must
+    # still arrive.
+    respx.get(EVENTS_URL).mock(
+        return_value=httpx.Response(
+            200, json=[{**event_dict, "id": "1"}, _REDACTED, {**event_dict, "id": "2"}]
+        )
+    )
+    batches: list[Sequence[RawEvent]] = []
+
+    async def sink(events: Sequence[RawEvent]) -> None:
+        batches.append(events)
+
+    counters = await poll_stream(settings, sink, pages=1, max_cycles=1, interval_s=0)
+
+    assert counters.cycles == 1
+    assert [e.id for e in batches[0]] == ["1", "2"]
+    assert counters.rejected == 1
+    assert counters.fetched == 2  # the reject is not an event and is not counted as one
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_a_redacted_event_is_kept_not_dropped(
+    settings: Settings, event_dict: dict[str, Any], slept: list[float]
+) -> None:
+    # Surviving the item is half of it. The capture is documented as the only copy,
+    # so an item it refuses still has to land somewhere inside it -- silently
+    # discarding one would make the counters overstate what the feed contained.
+    respx.get(EVENTS_URL).mock(return_value=httpx.Response(200, json=[_REDACTED]))
+
+    async def sink(events: Sequence[RawEvent]) -> None:  # pragma: no cover - never called
+        raise AssertionError("no valid events on this page")
+
+    await poll_stream(settings, sink, pages=1, max_cycles=1, interval_s=0)
+
+    rejects = settings.live_dir / "rejects.ndjson"
+    assert rejects.exists()
+    written = json.loads(rejects.read_text(encoding="utf-8").strip())
+    assert written["raw"] == _REDACTED
+    assert "repo" in written["reason"]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_a_clean_run_leaves_no_rejects_file(
+    settings: Settings, event_dict: dict[str, Any], slept: list[float]
+) -> None:
+    # An empty file would have to be explained by whoever finds it, and "the feed
+    # served nothing malformed" is the overwhelmingly common case.
+    respx.get(EVENTS_URL).mock(return_value=_page(event_dict, "1"))
+
+    async def sink(events: Sequence[RawEvent]) -> None:
+        return None
+
+    counters = await poll_stream(settings, sink, pages=1, max_cycles=1, interval_s=0)
+
+    assert counters.rejected == 0
+    assert not (settings.live_dir / "rejects.ndjson").exists()

@@ -22,9 +22,10 @@ from pathlib import Path
 
 from reporadar.config import Settings
 from reporadar.github.client import GitHubClient, RateLimitedError
-from reporadar.github.events import RawEvent, dedupe
+from reporadar.github.events import RawEvent, RejectedItem, dedupe
 from reporadar.ingest.dedup import DEFAULT_SEEN_WINDOW, RecentIds
 from reporadar.ingest.metrics import PollCounters
+from reporadar.ingest.sinks import write_rejects
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +57,22 @@ def effective_interval(requested: float, server_requested: float | None) -> floa
     return max(requested, server_requested)
 
 
-async def poll_once(client: GitHubClient, pages: int = 3, per_page: int = 100) -> list[RawEvent]:
-    """Sweep the first ``pages`` pages of /events and dedupe across them."""
+async def poll_once(
+    client: GitHubClient, pages: int = 3, per_page: int = 100
+) -> tuple[list[RawEvent], list[RejectedItem]]:
+    """Sweep the first ``pages`` pages of /events, deduped, plus what would not parse.
+
+    Rejects are returned rather than logged and forgotten: the caller owns where
+    they go, exactly as it owns where the events go, and a sweep that quietly
+    discarded them would make the counters overstate completeness.
+    """
     events: list[RawEvent] = []
+    rejected: list[RejectedItem] = []
     for page in range(1, pages + 1):
-        events.extend(await client.list_public_events(page=page, per_page=per_page))
-    return dedupe(events)
+        page_events, page_rejected = await client.list_public_events(page=page, per_page=per_page)
+        events.extend(page_events)
+        rejected.extend(page_rejected)
+    return dedupe(events), rejected
 
 
 async def collect_sample(
@@ -82,6 +93,7 @@ async def collect_sample(
     settings.live_dir.mkdir(parents=True, exist_ok=True)
     started = datetime.now(tz=UTC)
     out = settings.live_dir / f"events_{started:%Y%m%dT%H%M%SZ}.ndjson"
+    rejects_path = out.with_suffix(".rejects.ndjson")
 
     seen = RecentIds(maxlen=seen_window)
     counters = PollCounters()
@@ -108,7 +120,7 @@ async def collect_sample(
         async with GitHubClient(settings) as client:
             for cycle in range(cycles):
                 try:
-                    batch = await poll_once(client, pages=pages)
+                    batch, rejected = await poll_once(client, pages=pages)
                 except RateLimitedError as exc:
                     counters.record_rate_limited()
                     await asyncio.sleep(min(exc.retry_after_s, MAX_RATE_LIMIT_PAUSE_S))
@@ -116,16 +128,26 @@ async def collect_sample(
                 fresh = [event for event in batch if seen.add(event.id)]
                 for event in fresh:
                     fh.write(event.model_dump_json() + "\n")
-                counters.record_cycle(fetched=len(batch), fresh=len(fresh))
+                if rejected:
+                    write_rejects(rejects_path, rejected)
+                counters.record_cycle(fetched=len(batch), fresh=len(fresh), rejected=len(rejected))
                 if cycle < cycles - 1:
                     await asyncio.sleep(effective_interval(interval_s, client.last_poll_interval_s))
     logger.info(
-        "poll sample complete: cycles=%d fetched=%d fresh=%d duplicates=%d rate_limited=%d out=%s",
+        "poll sample complete: cycles=%d fetched=%d fresh=%d duplicates=%d "
+        "rate_limited=%d rejected=%d out=%s",
         counters.cycles,
         counters.fetched,
         counters.fresh,
         counters.duplicates,
         counters.rate_limited,
+        counters.rejected,
         out.name,
     )
+    if counters.rejected:
+        logger.warning(
+            "%d item(s) the feed served would not validate; kept in %s",
+            counters.rejected,
+            rejects_path.name,
+        )
     return out

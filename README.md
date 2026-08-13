@@ -16,7 +16,8 @@ template fallback, so no model is ever a point of failure.
 
 > **Status:** early development, and ingestion is the half that exists. In place today: a live
 > `/events` poller with bounded deduplication, run counters, and respect for the cadence the API
-> itself asks for; an always-on capture service writing hourly NDJSON and publishing to Kafka; a
+> itself asks for; an always-on capture service writing hourly NDJSON and publishing to Kafka,
+> keeping whatever the event envelope refuses in a rejects file rather than dying on it; a
 > validating consumer that stores events in TimescaleDB and dead-letters whatever will not decode;
 > idempotent GH Archive hour downloads converted into a partitioned Parquet lake with an hours
 > ledger, kept converged by a level-triggered loop that reclaims each hour's compressed source once

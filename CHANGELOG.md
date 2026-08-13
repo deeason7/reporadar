@@ -355,6 +355,19 @@ All notable changes to this project are documented here, per
   workstation wants when the raw hour is the thing being examined.
 
 ### Fixed
+- A single event the feed redacts no longer ends an always-on capture run. GitHub blanks the
+  `repo` object when a repository stops being publicly visible, leaving id, type, actor, timestamp
+  and payload intact and well-formed. The event envelope required `repo`, and a page was built in
+  a list comprehension, so one such item raised out of the whole sweep and ended the run — no
+  retry, no skip, nowhere for it to go. Measured against three complete archive hours the rate is
+  one in 488,274 events, which for a service polling on a sixty-second cycle is a death roughly
+  every thirty hours; fifty sessions of short bounded runs never met it, and a rehearsal met it by
+  luck. The page is now split into what validated and what did not: valid events flow on, and the
+  rejected item is written whole, with the reason it failed, to a rejects file beside the capture.
+  Kept rather than dropped, because the capture is the only copy — and the item is not corrupt,
+  which is the part that reframes the fix. The feed is behaving as documented; the envelope was
+  asserting a guarantee the feed never made.
+
 - The poller now honours the cadence the API asks for. Every /events response states a minimum
   interval between polls, and the service was configured to poll six times faster than that,
   against an endpoint cached for longer still. Polling faster cannot surface more events: it

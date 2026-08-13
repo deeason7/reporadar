@@ -32,17 +32,24 @@ class PollCounters:
     rate_limited: int = 0  # cycles skipped because the API was rate limiting
     fetched: int = 0  # events pulled from the API (after per-batch dedupe)
     fresh: int = 0  # events new across the run — i.e. actually written
+    # Items the feed served that the envelope would not accept. Counted separately
+    # from anything else because they are neither fetched nor lost: they are kept,
+    # in a rejects file, and a run with a non-zero value here is healthy rather
+    # than degraded. Zero is the value that used to be guaranteed -- by the run
+    # ending instead.
+    rejected: int = 0
 
     @property
     def duplicates(self) -> int:
         """Events re-seen across cycles (fetched but already in the dedup window)."""
         return self.fetched - self.fresh
 
-    def record_cycle(self, *, fetched: int, fresh: int) -> None:
+    def record_cycle(self, *, fetched: int, fresh: int, rejected: int = 0) -> None:
         """Account for one successful cycle."""
         self.cycles += 1
         self.fetched += fetched
         self.fresh += fresh
+        self.rejected += rejected
 
     def record_rate_limited(self) -> None:
         """Account for one cycle lost to rate limiting (no events fetched)."""

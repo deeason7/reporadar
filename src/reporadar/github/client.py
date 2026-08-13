@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 
 from reporadar.config import Settings
-from reporadar.github.events import RawEvent, parse_event
+from reporadar.github.events import RawEvent, RejectedItem, parse_page
 
 
 class RateLimitedError(Exception):
@@ -131,12 +131,20 @@ class GitHubClient:
 
         raise AssertionError("unreachable: retry loop exits via return or raise")
 
-    async def list_public_events(self, page: int = 1, per_page: int = 100) -> list[RawEvent]:
-        """One page of /events. A 304 (nothing new for our ETag) yields []."""
+    async def list_public_events(
+        self, page: int = 1, per_page: int = 100
+    ) -> tuple[list[RawEvent], list[RejectedItem]]:
+        """One page of /events, split into what validated and what did not.
+
+        A 304 (nothing new for our ETag) yields two empty lists. Items that fail
+        validation come back as rejects rather than raising: the feed redacts
+        ``repo`` on events whose repository has gone private, and one of those
+        used to end the whole run.
+        """
         status, body = await self.get_json("/events", params={"page": page, "per_page": per_page})
         if status == 304 or body is None:
-            return []
-        return [parse_event(item) for item in body]
+            return [], []
+        return parse_page(body)
 
     @staticmethod
     def _poll_interval_s(headers: httpx.Headers) -> float | None:

@@ -110,7 +110,7 @@ async def test_poll_once_sweeps_pages_and_dedupes(
         side_effect=[_page(event_dict, "a", "b"), _page(event_dict, "b", "c")]
     )
     async with GitHubClient(settings) as client:
-        events = await poll_once(client, pages=2, per_page=2)
+        events, _ = await poll_once(client, pages=2, per_page=2)
 
     assert [event.id for event in events] == ["a", "b", "c"]
 
