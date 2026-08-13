@@ -1,5 +1,5 @@
 .PHONY: setup lint fmt test up down logs provision up-app down-app logs-app image marts \
-        marts-status marts-converge grafana-grants
+        marts-status marts-converge grafana-grants site
 
 # One-time dev setup: environment + hooks
 setup:
@@ -18,6 +18,20 @@ fmt:
 
 test:
 	uv run pytest -q
+
+# Rebuild the public result page from the lake, in place.
+#
+# Every figure on that page is re-derived here; none of them is stored in the
+# HTML by hand. That is what makes this safe to run at any time and pointless to
+# run twice: the output carries no timestamp, so a rebuild over an unchanged lake
+# produces a byte-identical file and an empty diff. A diff after this ran means
+# the lake moved, which is exactly when the page needed rewriting.
+#
+# It reads `data/lake`, which is not in the repository — build it first with
+# `reporadar backfill <from> <to>`. With no lake the command says so and stops,
+# rather than writing a page with nothing on it.
+site:
+	uv run python tools/build_site.py
 
 # Local stack (Kafka + TimescaleDB + Grafana); host ports + secrets come from .env
 up:

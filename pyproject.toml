@@ -76,11 +76,20 @@ quote-style = "double"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# `tools/` holds standalone scripts rather than importable package code, so it is
+# not on the path by default and its logic would be untestable. Naming the
+# directory rather than the repository root is deliberate: the root also holds
+# `dbt/`, which has no `__init__.py` and would shadow the installed `dbt`
+# package as an implicit namespace package the moment the root went on the path.
+pythonpath = ["tools"]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests"]
+# `tools/` is checked as strictly as the package: it is the only place a figure
+# on the published page can come from, so it is not a scratch directory.
+files = ["src", "tests", "tools"]
+mypy_path = "tools"
 
 [[tool.mypy.overrides]]
 # duckdb's Python API doesn't ship complete stubs; contain the gap to this module
