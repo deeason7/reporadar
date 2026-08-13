@@ -4,7 +4,28 @@ All notable changes to this project are documented here, per
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [1.0.0] — 2026-08-13
+
+Everything below shipped under this release. The project is closed here: the ingestion path is
+complete, the question it was pointed at has a measured answer, and the analytical layer that was
+originally planned on top of it was cut rather than left open.
+
+**What this version is.** A local, reproducible pipeline that reads GitHub's public event stream two
+ways, reconciles what landed against a record of what should have, aggregates it into daily marts,
+and reports what the feed is actually made of. An empty directory to a provisioned dashboard in the
+commands in the README.
+
+**What it deliberately is not.** It does not report what share of the firehose it captures — that
+estimator was built, published, measured, and removed. It is not deployed anywhere. There is no
+risk model, no forecast, and no generated brief; those were cut on stated reasons rather than left
+as an open roadmap.
+
+**The result it exists to report.** The public event feed is overwhelmingly automated: 93.9% of
+events come from single-actor repositories, and among repository-days carrying twenty or more
+events, 95.5% already have exactly one actor. A prevalence baseline scores F1 0.9768 on a held-out
+day, and the candidate feature that motivated the analysis adds 1.04× — so no classifier shipped,
+and the negative result is published instead.
+
 
 ### Added
 - Project scaffold: src layout, uv-managed environment, ruff + mypy (strict) + pytest
