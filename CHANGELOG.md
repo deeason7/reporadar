@@ -289,6 +289,25 @@ All notable changes to this project are documented here, per
   That interaction is why the flag is worth having: it is the only lever on the wait. `0` silences
   progress reporting without silencing the summary written when the run ends.
 
+### Removed
+- The estimated capture ratio, and the module that computed it. The poller no longer reports what
+  share of the feed it sees, and nothing replaces that figure — the run counters report exact totals
+  of what was pulled, and the question of what fraction those represent is left open and marked open.
+
+  The estimator's defect was diagnosed and fixed first, which is what made the removal decidable.
+  Three things then settled it. On the live feed the fix changes nothing: forty-eight consecutive
+  cycles, with the pre-fix version fed identical ids as a control, produced results identical to the
+  last float bit — a returned page spans about one id cluster, so there is no boundary for the two
+  versions to disagree about. Nor can there be: the endpoint refuses a fourth page and silently caps
+  a hundred per page, so no configuration reaches a page wide enough to contain the gap the fix
+  exists to detect. And the error that remained, roughly 8.6× against an independently measured
+  event rate, has no mechanism behind it — measured on a complete archive hour at the live page
+  size, spacing within a page accounts for almost none of it.
+
+  A number wrong by an unexplained factor is not a rough version of the right number. Keeping it
+  would have meant maintaining an instrument whose output nobody could safely use, and publishing it
+  would have meant asking readers to trust a figure its own authors could not account for.
+
 ### Changed
 - The README no longer publishes a capture ratio. It carried a measured 2.08%, and the estimator
   behind that number was then checked against complete archive hours: event ids arrive in dense
