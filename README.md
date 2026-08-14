@@ -158,11 +158,18 @@ that?* is left open and named as open. **A number wrong by an unexplained factor
 version of the right number.** It is named here rather than quietly dropped, because a capability
 that was removed and one that never existed look identical from outside.
 
-### It is not deployed anywhere
+### The result is published; the system is not hosted
 
-This runs on one machine and stops there. Hosted deployment was in scope and was cut under a
-zero-cost constraint: every free option either loses its disk between restarts, sleeps on a timer
-that a capture pipeline would end up measuring instead of GitHub, or requires a card. The goal is
+The finding is a page anyone can read — **<https://deeason7.github.io/reporadar/>** — built by
+`make site` from the same Parquet lake the numbers come from, committed to `docs/`, and served as a
+static file. Nothing runs behind it. Every figure on it is re-derived at build time rather than
+typed in, so a rebuild over an unchanged lake reproduces it byte for byte and a stale number cannot
+survive one.
+
+The pipeline itself runs on one machine and stops there. Hosted deployment was in scope and was cut
+under a zero-cost constraint: every free option either loses its disk between restarts, sleeps on a
+timer that a capture pipeline would end up measuring instead of GitHub, or requires a card.
+**Publishing a result is not running a system**, and the page does not close that gap — the goal is
 recorded as missed rather than redefined into one that was met. Reproducing the stack from this
 README is what the project offers instead, and the commands below are the whole of it.
 

@@ -16,9 +16,10 @@ and reports what the feed is actually made of. An empty directory to a provision
 commands in the README.
 
 **What it deliberately is not.** It does not report what share of the firehose it captures — that
-estimator was built, published, measured, and removed. It is not deployed anywhere. There is no
-risk model, no forecast, and no generated brief; those were cut on stated reasons rather than left
-as an open roadmap.
+estimator was built, published, measured, and removed. It is not hosted anywhere: the finding ships
+as a static page (`docs/`, served at <https://deeason7.github.io/reporadar/>), but the pipeline
+behind it runs only on a local machine. There is no risk model, no forecast, and no generated
+brief; those were cut on stated reasons rather than left as an open roadmap.
 
 **The result it exists to report.** The public event feed is overwhelmingly automated: 93.9% of
 events come from single-actor repositories, and among repository-days carrying twenty or more
@@ -309,6 +310,14 @@ and the negative result is published instead.
   before the first line, and lowering `--interval-s` shortens neither the polling nor the reporting.
   That interaction is why the flag is worth having: it is the only lever on the wait. `0` silences
   progress reporting without silencing the summary written when the run ends.
+- A published page of what the lake contains: `make site` runs `tools/build_site.py` over the
+  Parquet lake and writes `docs/index.html`, which GitHub serves at
+  <https://deeason7.github.io/reporadar/>. Every figure on it is re-derived from the lake at build
+  time and none is typed in, so the page cannot quietly disagree with the data it describes. It
+  carries no wall-clock timestamp on purpose — what dates it is the data behind it, and a rebuild
+  over an unchanged lake produces an identical file, which makes drift detectable by comparison
+  rather than by trust. Nothing verifies that automatically: reproducing the page needs the lake,
+  which is far too large for CI, so the check is a local one by construction.
 
 ### Removed
 - The estimated capture ratio, and the module that computed it. The poller no longer reports what
