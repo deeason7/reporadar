@@ -393,3 +393,56 @@ async def test_a_clean_run_leaves_no_rejects_file(
 
     assert counters.rejected == 0
     assert not (settings.live_dir / "rejects.ndjson").exists()
+
+
+@respx.mock
+async def test_a_server_imposed_cadence_is_announced_once_not_every_cycle(
+    settings: Settings,
+    event_dict: dict[str, Any],
+    slept: list[float],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Two guards, one line apart, and both were unconstrained. The outer one makes
+    # the notice fire only when the cadence CHANGES — inverted, an operator paced
+    # at 60s gets a line every single cycle for the life of the process. The inner
+    # one is what makes the message true: it may only claim the server is
+    # "overriding the configured" value when the two actually differ.
+    paced = {"X-Poll-Interval": "60"}
+    respx.get(EVENTS_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=[{**event_dict, "id": i}], headers=paced)
+            for i in ("a", "b", "c")
+        ]
+    )
+
+    with caplog.at_level(logging.INFO):
+        await poll_stream(settings, _CollectSink(), interval_s=10.0, pages=1, max_cycles=3)
+
+    assert slept == [60.0, 60.0]  # the server's number won, both waits
+    overrides = [r for r in caplog.records if "overriding the configured" in r.getMessage()]
+    assert len(overrides) == 1, f"announced {len(overrides)} times, not once"
+    assert "60" in overrides[0].getMessage()
+    assert "10" in overrides[0].getMessage()  # both numbers, so the operator can act
+
+
+@respx.mock
+async def test_no_override_is_announced_when_the_server_agrees_with_us(
+    settings: Settings,
+    event_dict: dict[str, Any],
+    slept: list[float],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The negative half. With the configured interval already at or above what the
+    # server asks, nothing is being overridden and saying so would be false.
+    respx.get(EVENTS_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=[{**event_dict, "id": i}], headers={"X-Poll-Interval": "5"})
+            for i in ("a", "b")
+        ]
+    )
+
+    with caplog.at_level(logging.INFO):
+        await poll_stream(settings, _CollectSink(), interval_s=30.0, pages=1, max_cycles=2)
+
+    assert slept == [30.0]  # ours was already slower, so ours stands
+    assert not [r for r in caplog.records if "overriding the configured" in r.getMessage()]

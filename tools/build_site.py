@@ -1130,7 +1130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     out_path.write_text(page, encoding="utf-8")
     print(
         f"wrote {out_path} — {fmt_int(figures.events)} events, "
-        f"{len(figures.days)} days, {fmt_int(len(page))} bytes"
+        f"{len(figures.days)} days, {fmt_int(len(page.encode('utf-8')))} bytes"
     )
     return 0
 

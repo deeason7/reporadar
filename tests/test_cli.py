@@ -22,6 +22,7 @@ from reporadar.ingest.repair import (
     RepairReport,
 )
 from reporadar.ingest.sinks import EventSink
+from reporadar.ingest.topics import ProvisionReport, TopicOutcome
 from reporadar.ingest.verify import UNBACKED_EXIT_CODE, Finding, Problem, VerifyReport
 from reporadar.marts.freshness import STALE_EXIT_CODE, DayDrift, FreshnessReport
 
@@ -777,6 +778,101 @@ def test_backfill_refuses_a_range_whose_days_are_transposed(
     assert result.exit_code != 0
     assert order == []  # refused on its arguments, before a socket was opened
     assert "FIRST_DAY 2026-07-22 is after LAST_DAY 2026-07-21" in result.output
+
+
+def test_backfill_accepts_a_range_of_one_day(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # The transposed-range test above proves the guard FIRES. It cannot show the
+    # guard does not over-fire, and `first > last` vs `first >= last` differ on
+    # exactly one input: the single-day range, which is the common case when
+    # filling one gap. Nothing else in the suite passes the same day twice, so
+    # tightening that comparison by one character was a silent behaviour change.
+    calls: dict[str, object] = {}
+    _archive_settings(monkeypatch, pinned_cli_settings)
+    monkeypatch.setattr(cli, "pg_connection", _recording_connection([], object()))
+
+    async def fake_create_schema(connection_arg: object) -> None:
+        return None
+
+    async def fake_converge_once(connection_arg: object, **kwargs: object) -> ArchiveCounters:
+        calls.update(kwargs)
+        return ArchiveCounters()
+
+    monkeypatch.setattr(cli, "create_schema", fake_create_schema)
+    monkeypatch.setattr(cli, "converge_once", fake_converge_once)
+
+    result = runner.invoke(cli.app, ["backfill", "2026-07-22", "2026-07-22"])
+
+    assert result.exit_code == 0
+    # Reached the scan rather than being refused, and both ends stayed that day —
+    # "both inclusive" in the docstring means one day is 24 hours, not zero.
+    assert calls["first_day"] == date(2026, 7, 22)
+    assert calls["last_day"] == date(2026, 7, 22)
+
+
+def _provision_report(*, drifted: bool) -> ProvisionReport:
+    """A report for two present topics, optionally disagreeing with the spec."""
+    outcomes = (
+        TopicOutcome("reporadar.events.raw", created=False, existed=True, partitions=3),
+        TopicOutcome("reporadar.events.dlq", created=False, existed=True, partitions=3),
+    )
+    drifts = ("reporadar.events.raw has 3 partitions, configured for 6",) if drifted else ()
+    return ProvisionReport(outcomes, drifts)
+
+
+def test_provision_reports_drift_but_still_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # Provisioning is a deploy step that runs on every start, and the cluster it
+    # runs against is usually one somebody sized on purpose. Failing on drift
+    # would brick every one of those starts — so drift is reported here and is
+    # NOT an error. Only --check is strict, and the difference between the two is
+    # a single `and`.
+    report = _provision_report(drifted=True)
+
+    async def fake_provision_topics(settings: object, *, check_only: bool) -> ProvisionReport:
+        assert check_only is False
+        return report
+
+    monkeypatch.setattr(cli, "provision_topics", fake_provision_topics)
+
+    result = runner.invoke(cli.app, ["provision"])
+
+    assert result.exit_code == 0  # drift is not a failure when provisioning
+    assert report.ready is False  # ...and the report it exited 0 on did say so
+    assert "'drifted': 1" in result.output
+
+
+def test_provision_check_fails_on_drift(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # The other half of the same decision, and the half a deploy gate depends on:
+    # --check is the strict reading, so the identical report must exit non-zero.
+    async def fake_provision_topics(settings: object, *, check_only: bool) -> ProvisionReport:
+        assert check_only is True
+        return _provision_report(drifted=True)
+
+    monkeypatch.setattr(cli, "provision_topics", fake_provision_topics)
+
+    result = runner.invoke(cli.app, ["provision", "--check"])
+
+    assert result.exit_code == 1
+
+
+def test_provision_check_exits_zero_when_the_cluster_matches(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    # And the gate has to be able to pass, or it is a check that always fails.
+    async def fake_provision_topics(settings: object, *, check_only: bool) -> ProvisionReport:
+        return _provision_report(drifted=False)
+
+    monkeypatch.setattr(cli, "provision_topics", fake_provision_topics)
+
+    result = runner.invoke(cli.app, ["provision", "--check"])
+
+    assert result.exit_code == 0
+    assert "'drifted': 0" in result.output
 
 
 def test_verify_reports_a_clean_lake_and_exits_zero(

@@ -365,3 +365,76 @@ async def test_a_lookback_below_one_day_is_refused(tmp_path: Path, ingest: FakeI
                 lookback_days=0,
             )
         )
+
+
+async def test_an_hour_is_due_the_instant_it_closes(tmp_path: Path, ingest: FakeIngest) -> None:
+    # test_an_hour_that_has_not_closed_is_never_attempted covers the far side of
+    # this boundary. The boundary itself is the only input `<=` and `<` disagree
+    # on, and it is the common case for a loop that wakes on the hour: with `<`,
+    # every hour would be skipped on the pass that should have taken it and picked
+    # up an interval late, forever, while the scan still reported nothing overdue.
+    from reporadar.ingest.hour import hour_end
+
+    closes = hour_end(DAY, 1)
+    connection = FakeConnection([(DAY, 1)])
+
+    counters = await converge_once(
+        connection,
+        archive_dir=tmp_path / "raw",
+        lake_dir=tmp_path / "lake",
+        now=closes,  # exactly the instant the hour ends
+        first_day=DAY,
+        last_day=DAY,
+    )
+
+    assert ingest.calls == [(DAY, 1)]
+    assert counters.due == 1
+
+
+async def test_a_concurrency_of_one_is_allowed(tmp_path: Path, ingest: FakeIngest) -> None:
+    # The guard rejects 0 and below. One at a time is the safe, serial setting and
+    # the one an operator reaches for when debugging, so it has to be reachable —
+    # a validator that rejects its own safest input is worse than none.
+    counters = await _once(FakeConnection([(DAY, 1)]), tmp_path, concurrency=1)
+
+    assert counters.due == 1
+    with pytest.raises(ValueError, match="concurrency must be at least 1"):
+        await _once(FakeConnection([(DAY, 1)]), tmp_path, concurrency=0)
+
+
+async def test_a_lookback_of_one_day_is_allowed(
+    tmp_path: Path, ingest: FakeIngest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The same boundary as concurrency, on the loop rather than the pass. One day
+    # is the tightest useful window — "only re-check today" — so a guard that
+    # rejected it would force every operator onto a wider scan than they asked
+    # for, and the loop would look like it was ignoring the setting.
+    async def no_sleep(seconds: float, stop: asyncio.Event | None) -> None:
+        return None
+
+    monkeypatch.setattr(converge_module, "interruptible_sleep", no_sleep)
+
+    await _bounded(
+        converge_forever(
+            FakeConnection([(DAY, 1)]),
+            archive_dir=tmp_path / "raw",
+            lake_dir=tmp_path / "lake",
+            lookback_days=1,
+            max_passes=1,
+            clock=lambda: NOW,
+        )
+    )
+
+    assert ingest.calls == [(DAY, 1)]  # ran rather than being refused
+
+    with pytest.raises(ValueError, match="lookback_days must be at least 1"):
+        await _bounded(
+            converge_forever(
+                FakeConnection([(DAY, 1)]),
+                archive_dir=tmp_path / "raw",
+                lake_dir=tmp_path / "lake",
+                lookback_days=0,
+                max_passes=1,
+                clock=lambda: NOW,
+            )
+        )

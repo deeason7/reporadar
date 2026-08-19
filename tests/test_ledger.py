@@ -10,6 +10,7 @@ cannot make a late-published hour happen on demand. Neither substitutes.
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import UTC, date, datetime
 from typing import Any
@@ -353,3 +354,63 @@ async def test_the_ledger_round_trips_against_a_real_database() -> None:
         assert (row["status"], row["events"]) == ("missing", None)
     finally:
         await connection.close()
+
+
+# --------------------------------------------------------------------------- #
+# The column type guards
+# --------------------------------------------------------------------------- #
+
+
+def test_a_bool_is_not_accepted_as_an_integer_column() -> None:
+    """``isinstance(True, int)`` is True in Python, so the guard needs the extra arm.
+
+    Without it a boolean column reaching an integer field passes narrowing and
+    becomes 1 or 0 downstream — an event count of ``True`` that reads as one
+    event. That is a schema drift reported as data, which is the failure mode
+    these helpers exist to turn into a sentence.
+    """
+    from reporadar.ingest.ledger import _as_int
+
+    assert _as_int(7) == 7
+    with pytest.raises(TypeError, match="got bool"):
+        _as_int(True)
+    with pytest.raises(TypeError, match="got str"):
+        _as_int("7")
+
+
+def test_a_text_column_guard_names_the_type_it_got() -> None:
+    from reporadar.ingest.ledger import _as_str
+
+    assert _as_str("ok") == "ok"
+    with pytest.raises(TypeError, match="got int"):
+        _as_str(1)
+
+
+async def test_the_removal_warning_names_the_hours_it_removed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # This line is the only record that a destructive statement ran, and the
+    # fallback is a display fallback: "none" belongs to the case where the delete
+    # matched nothing, never to the case where it matched something. Inverted, the
+    # warning says "none" precisely when rows WERE destroyed.
+    connection = FakeConnection([[DAY, 5], [DAY, 6]])
+
+    with caplog.at_level(logging.WARNING):
+        await forget_ingested_hours(connection, [(DAY, 5), (DAY, 6)])
+
+    assert f"{DAY} 05" in caplog.text
+    assert f"{DAY} 06" in caplog.text
+    assert "none" not in caplog.text
+
+
+async def test_the_removal_warning_says_none_when_the_delete_matched_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The other half: hours were asked for, the database removed no rows. An empty
+    # list rendered into the sentence would read as a truncated message.
+    connection = FakeConnection([])
+
+    with caplog.at_level(logging.WARNING):
+        await forget_ingested_hours(connection, [(DAY, 5)])
+
+    assert "none" in caplog.text

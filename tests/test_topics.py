@@ -9,6 +9,7 @@ import pytest
 from reporadar.config import Settings
 from reporadar.ingest import topics
 from reporadar.ingest.topics import (
+    TopicOutcome,
     TopicSpec,
     ensure_topics,
     kafka_admin,
@@ -394,3 +395,35 @@ def test_the_admin_timeout_stays_short_enough_to_fail_a_deploy_fast() -> None:
     # A bound, not a value: the exact number is judgement, but a deploy step that
     # waits as long as the client's 40s default reads to an operator as a hang.
     assert 5_000 <= topics.ADMIN_REQUEST_TIMEOUT_MS <= 30_000
+
+
+# --------------------------------------------------------------------------- #
+# What drift detection refuses to answer
+# --------------------------------------------------------------------------- #
+
+
+def test_drift_is_not_reported_for_a_topic_there_was_nothing_to_compare() -> None:
+    """Both arms of the early return, and each guards a different false report.
+
+    A topic this run just CREATED matches the spec by construction — it was built
+    from it — so comparing it can only produce noise. A topic whose partition count
+    came back unknown is the more dangerous case: `None != spec.partitions` is
+    perfectly true, and reporting it would tell an operator their cluster had
+    drifted when all that happened is that a describe call came back thin.
+    """
+    spec = TopicSpec(name="reporadar.events.raw", partitions=6, replication_factor=1)
+
+    just_created = TopicOutcome(spec.name, created=True, existed=False, partitions=6)
+    assert just_created.drift_from(spec) is None
+
+    partitions_unknown = TopicOutcome(spec.name, created=False, existed=True, partitions=None)
+    assert partitions_unknown.drift_from(spec) is None
+
+    # ...and the guard must still let a real disagreement through, or it is a
+    # drift check that can never report drift.
+    genuinely_drifted = TopicOutcome(
+        spec.name, created=False, existed=True, partitions=3, replication_factor=1
+    )
+    reported = genuinely_drifted.drift_from(spec)
+    assert reported is not None
+    assert "3 partitions, configured for 6" in reported

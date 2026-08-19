@@ -15,6 +15,31 @@ All notable changes to this project are documented here, per
   line. No message is reworded, and every exit code the CLI designs is unchanged. Running under
   `pytest`, importing the module, or calling `app()` directly all keep full tracebacks.
 
+### Fixed
+
+- `tools/build_site.py` reported the written page's size in characters while labelling it bytes.
+  The page is written as UTF-8 and is full of three-byte punctuation, so the two diverge by a few
+  hundred — and the gap grows with the prose rather than staying constant. Affected the build
+  command's own stdout only; the published page was never wrong.
+
+### Added
+
+- Tests for behaviour that was previously unconstrained: an operator invariant is now pinned in
+  each place a change to it would otherwise have gone unnoticed by the suite.
+  - the backfill range guard accepts a single-day range (only the guard's refusal was covered)
+  - `provision` reports topic drift without failing, and `provision --check` fails on it
+  - `download_hour` closes a client it created and leaves a caller's client open
+  - an hour becomes due at the instant it closes, on both the loop and the ingest path
+  - `concurrency=1` and `lookback_days=1` are accepted rather than rejected by their guards
+  - the ledger's and the marts' integer column guards reject `bool` (`isinstance(True, int)` is
+    true in Python, so the extra arm is the whole guard)
+  - the published page claims "every step is upward" only when both units strictly rise, and names
+    the held-out day as excluded from the training days
+  - the repair pre-flight sizes only the hours being repaired, and refuses to invent a lost count
+  - a server-imposed poll cadence is announced once when it changes, not every cycle
+  - drift is not reported for a topic that was just created or whose partition count is unknown
+  - the ledger's removal warning names the hours it removed, and says "none" only when none were
+
 ## [1.0.0] — 2026-08-13
 
 Everything below shipped under this release. The project is closed here: the ingestion path is

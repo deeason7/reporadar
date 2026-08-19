@@ -367,3 +367,14 @@ def test_the_grace_is_generous_because_missing_is_settled() -> None:
     hour into a permanent hole.
     """
     assert DEFAULT_PUBLICATION_GRACE >= timedelta(hours=12)
+
+
+async def test_an_hour_may_be_ingested_the_instant_it_closes(tmp_path: Path) -> None:
+    # The refusal above tests one minute BEFORE the boundary; this tests the
+    # boundary itself, which is the only input `<` and `<=` disagree on. An hour
+    # is publishable the moment it ends — tightening this by one character would
+    # make every hour wait for the next clock tick, and the loop would look merely
+    # slow rather than wrong.
+    report = await _ingest(tmp_path, RecordingConnection(), now=CLOSED_AT)
+
+    assert report is not None  # reached the ingest rather than being refused

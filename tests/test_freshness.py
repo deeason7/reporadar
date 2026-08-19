@@ -17,6 +17,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from reporadar.ingest.lake import PARQUET_FILENAME, partition_dir
 from reporadar.marts.freshness import (
     MART_DAYS,
@@ -215,3 +217,31 @@ def test_the_four_states_are_pinned_where_the_report_reads_them() -> None:
     assert DayDrift(DAY, 3, None).kind is Drift.UNBUILT
     assert DayDrift(DAY, 3, 2).stale
     assert not DayDrift(DAY, 3, 4).stale
+
+
+# --------------------------------------------------------------------------- #
+# The column type guards
+# --------------------------------------------------------------------------- #
+
+
+def test_the_integer_guard_rejects_a_bool() -> None:
+    # The same arm as the ledger's, in a second module that repeats the helper.
+    # Both were unconstrained: a mutation removing the bool arm in either one left
+    # the whole suite green.
+    from reporadar.marts.freshness import _as_int
+
+    assert _as_int(3) == 3
+    with pytest.raises(TypeError, match="got bool"):
+        _as_int(False)
+
+
+def test_the_bool_and_date_guards_name_the_type_they_got() -> None:
+    from reporadar.marts.freshness import _as_bool, _as_date
+
+    assert _as_bool(True) is True
+    with pytest.raises(TypeError, match="got int"):
+        _as_bool(1)
+
+    assert _as_date(date(2026, 7, 22)) == date(2026, 7, 22)
+    with pytest.raises(TypeError, match="got str"):
+        _as_date("2026-07-22")

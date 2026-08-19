@@ -16,6 +16,7 @@ test in ``test_ledger.py``, and neither substitutes for the other.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -25,8 +26,9 @@ import pytest
 from reporadar.ingest import repair as repair_module
 from reporadar.ingest.hour import HourReport
 from reporadar.ingest.lake import PARQUET_FILENAME, partition_dir
-from reporadar.ingest.ledger import HourStatus
+from reporadar.ingest.ledger import HourRecord, HourStatus
 from reporadar.ingest.repair import INCOMPLETE_EXIT_CODE, repair_unbacked
+from reporadar.ingest.verify import Finding, Problem
 
 DAY = date(2026, 7, 28)
 NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
@@ -317,3 +319,75 @@ async def test_the_incomplete_exit_code_is_not_one_a_convention_already_claims()
     # 0, 1 and 2 mean success, error and usage to everything that runs this. A
     # wrapper branching on any of them would act on a crash or a typo.
     assert INCOMPLETE_EXIT_CODE not in (0, 1, 2)
+
+
+# --------------------------------------------------------------------------- #
+# What the pre-flight announcement counts
+# --------------------------------------------------------------------------- #
+
+
+def _record(day: date, hour: int, *, events: int | None, size: int | None) -> HourRecord:
+    """A ledger row. Status follows the count, because the ledger refuses the other pairing.
+
+    ``HourRecord`` rejects an ``INGESTED`` hour with no event count — the same rule the
+    table's own CHECK constraint enforces — so a null count here necessarily belongs to
+    an hour that was never ingested. That is exactly the state `_claimed_events` guards.
+    """
+    status = HourStatus.INGESTED if events is not None else HourStatus.FAILED
+    return HourRecord(day=day, hour=hour, status=status, events=events, bytes=size)
+
+
+def test_the_announcement_sizes_only_the_hours_being_repaired(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The membership test decides which claims are summed. Inverted, it reports the
+    # size of every hour that is FINE — a number that looks authoritative, is the
+    # wrong one, and is printed immediately before a destructive step.
+    day = date(2026, 7, 22)
+    claims = {
+        (day, 1): _record(day, 1, events=10, size=5_000_000),  # unbacked
+        (day, 2): _record(day, 2, events=20, size=90_000_000),  # healthy, must not count
+    }
+    unbacked = [Finding(day=day, hour=1, problem=Problem.ABSENT, detail="gone")]
+
+    with caplog.at_level(logging.WARNING):
+        repair_module._announce(unbacked, claims)
+
+    assert "5.0 MB" in caplog.text
+    assert "90" not in caplog.text  # the healthy hour's size never appears
+
+
+def test_a_claim_with_no_recorded_size_contributes_zero_rather_than_failing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A row can legitimately carry a null size. The announcement is a courtesy
+    # printed before the real work, so it must not be the thing that raises.
+    day = date(2026, 7, 22)
+    claims = {(day, 1): _record(day, 1, events=10, size=None)}
+    unbacked = [Finding(day=day, hour=1, problem=Problem.ABSENT, detail="gone")]
+
+    with caplog.at_level(logging.WARNING):
+        repair_module._announce(unbacked, claims)
+
+    assert "0.0 MB" in caplog.text
+
+
+def test_a_lost_event_count_is_refused_rather_than_invented() -> None:
+    """Both arms of the guard, because either alone leaves a fabricated zero reachable.
+
+    A zero here reports every hour as disagreeing by exactly its own size — a false
+    finding that looks precise, in the one number the command exists to print.
+    """
+    day = date(2026, 7, 22)
+
+    with pytest.raises(LookupError, match="no recorded event count"):
+        repair_module._claimed_events({}, day, 1)  # the row is gone entirely
+
+    only_a_null_count = {(day, 1): _record(day, 1, events=None, size=1)}
+    with pytest.raises(LookupError, match="no recorded event count"):
+        repair_module._claimed_events(
+            only_a_null_count, day, 1
+        )  # the row is there, the count is not
+
+    present = {(day, 1): _record(day, 1, events=42, size=1)}
+    assert repair_module._claimed_events(present, day, 1) == 42

@@ -48,6 +48,7 @@ from build_site import (
     fmt_ratio,
     held_out_sql,
     lake_source,
+    main,
     per_day_sql,
     per_repo_sql,
     render,
@@ -403,3 +404,103 @@ def test_a_flat_series_is_not_described_as_rising() -> None:
     assert "Every step is upward" in render(figures())
     assert "Every step is upward" not in render(flat)
     assert "does not move in one direction" in render(flat)
+
+
+# --------------------------------------------------------------------------- #
+# The claims the page makes about direction
+# --------------------------------------------------------------------------- #
+
+UPWARD = "Every step is upward, on both units."
+NOT_ONE_DIRECTION = "It does not move in one direction on both units."
+
+
+def test_both_units_rising_is_reported_as_upward() -> None:
+    # The positive case, so the two tests below are refusals rather than a claim
+    # that never fires. In the fixture both shares rise: 50% -> 66.67% of events,
+    # 6.67% -> 10% of repository-days.
+    page = render(figures())
+    assert UPWARD in page
+    assert NOT_ONE_DIRECTION not in page
+
+
+def test_a_flat_step_is_not_an_upward_step() -> None:
+    # `>` and `>=` differ on exactly one input — the equal pair — and a lake with
+    # two identical days is the likeliest thing to produce one. The page states
+    # this as a fact about the data, so the difference between the two spellings
+    # is the difference between a true sentence and a false one.
+    flat_events = figures(
+        per_day=(
+            DayRow("2026-01-01", 400, 150, 200, 10, 100),
+            DayRow("2026-01-03", 600, 200, 300, 20, 300),  # 50% both days
+        )
+    )
+    page = render(flat_events)
+    assert NOT_ONE_DIRECTION in page
+    assert UPWARD not in page
+
+    flat_repo_days = figures(
+        per_day=(
+            DayRow("2026-01-01", 400, 150, 200, 10, 100),
+            DayRow("2026-01-03", 600, 300, 400, 20, 300),  # 1-in-15 both days
+        )
+    )
+    page = render(flat_repo_days)
+    assert NOT_ONE_DIRECTION in page  # flat on the second unit is equally not upward
+    assert UPWARD not in page
+
+
+def test_one_unit_rising_is_not_both_units_rising() -> None:
+    # "on both units" is the load-bearing half of the sentence. With events rising
+    # and repository-days falling, an `or` here would publish "every step is
+    # upward" over data that steps both ways — the exact overclaim the section
+    # exists to refuse.
+    diverging = figures(
+        per_day=(
+            DayRow("2026-01-01", 400, 150, 200, 10, 100),
+            DayRow("2026-01-03", 600, 300, 400, 10, 300),  # events up, repo-days down
+        )
+    )
+    page = render(diverging)
+    assert NOT_ONE_DIRECTION in page
+    assert UPWARD not in page
+
+
+def test_the_training_days_are_the_days_that_were_not_held_out() -> None:
+    # The page names which days the rule was fitted on. Inverting this filter
+    # would print the held-out day as its own training set — a claim that the
+    # evaluation was done on the data it was fitted to, which is the one thing
+    # the held-out day exists to prevent.
+    three_days = figures(
+        days=("2026-01-01", "2026-01-02", "2026-01-03"),
+        held_out_day="2026-01-03",
+        per_day=(
+            DayRow("2026-01-01", 200, 75, 100, 5, 50),
+            DayRow("2026-01-02", 200, 75, 100, 5, 50),
+            DayRow("2026-01-03", 600, 200, 400, 20, 300),
+        ),
+    )
+    page = render(three_days)
+    assert "2026-01-01, 2026-01-02 were" in page
+    assert "2026-01-03 were" not in page  # the held-out day is not its own training set
+
+
+def test_the_written_size_is_reported_in_bytes_not_characters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``len(str)`` counts characters; the file is written as UTF-8.
+
+    The page is full of em-dashes and typographic quotes, each costing three
+    bytes, so the two numbers diverge by a few hundred — and the gap GROWS with
+    the prose. It is a slope, not a constant, which is why one spot-check of the
+    difference could never have shown it.
+    """
+    monkeypatch.setattr("build_site.collect", lambda lake_dir: figures())
+    out = tmp_path / "index.html"
+
+    assert main(["--lake", str(tmp_path / "lake"), "--out", str(out)]) == 0
+
+    printed = re.search(r"([\d,]+) bytes", capsys.readouterr().out)
+    assert printed is not None, "the command no longer reports a size at all"
+    reported = int(printed.group(1).replace(",", ""))
+    assert reported == out.stat().st_size  # what the filesystem actually holds
+    assert reported > len(out.read_text(encoding="utf-8"))  # ...and it is not the character count
