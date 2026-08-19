@@ -498,4 +498,35 @@ def capture_rate_cmd(archive_path: Path, live_path: Path) -> None:
 
 
 def main() -> None:
-    app()
+    """Console-script entry point, and the only place failures are presented.
+
+    A missing setting, a file that is not there, a database that is not up: these are
+    conditions an operator fixes, not defects, and a traceback tells them they found one.
+    The messages this project already writes are good -- ``store.py`` names the variable
+    *and* the example file -- but they arrive on the hundred-and-fourth line of a hundred
+    and seven, under a panel whose first word is ``Traceback``. Presenting them is the
+    whole change; none of them is reworded.
+
+    ``Exception``, not a tuple of the families we can name. The three conditions measured
+    from a clean clone raise ``RuntimeError``, ``ConnectionRefusedError`` and
+    ``duckdb.IOException`` -- which share no base below ``Exception`` -- and asyncpg and
+    aiokafka each add another rooted the same way. An enumeration here would go stale the
+    next time a dependency is added, silently, in the direction of the traceback coming
+    back: the same shape as the audit that swept the object types its author could name.
+
+    Nothing else calls this. ``pytest``, ``app()`` and any direct import keep their full
+    tracebacks, so what is given up is the traceback *from the packaged command* only.
+
+    ``typer.Exit`` is re-raised explicitly. Click's standalone mode absorbs it before it
+    reaches here -- measured, not assumed -- but ``typer.Exit`` **is a RuntimeError
+    subclass**, so if that ever changes the handler below would flatten every exit code
+    this CLI designs (``3`` unconverged, unbacked, stale) to ``1``. ``tests/test_cli_errors.py``
+    pins it, because the type hierarchy says this is unsafe and only the runtime says it is not.
+    """
+    try:
+        app()
+    except typer.Exit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- presentation boundary; see docstring
+        typer.secho(f"reporadar: {type(exc).__name__}: {exc}", fg=typer.colors.RED, err=True)
+        raise SystemExit(1) from None

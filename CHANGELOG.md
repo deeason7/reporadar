@@ -4,6 +4,17 @@ All notable changes to this project are documented here, per
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Operator errors from the packaged `reporadar` command are now presented as a single line on
+  stderr instead of a traceback. A missing setting, an absent file, or a database that is not
+  running are conditions an operator fixes, not defects — each previously arrived as ~100 lines
+  carrying absolute filesystem paths, with the message that actually helps on the second-to-last
+  line. No message is reworded, and every exit code the CLI designs is unchanged. Running under
+  `pytest`, importing the module, or calling `app()` directly all keep full tracebacks.
+
 ## [1.0.0] — 2026-08-13
 
 Everything below shipped under this release. The project is closed here: the ingestion path is
