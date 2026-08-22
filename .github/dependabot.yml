@@ -1,0 +1,52 @@
+# Keep pinned dependencies moving, without anyone watching them.
+#
+# This file exists because of a trade made elsewhere. Every `uses:` line in this
+# repository is pinned to a commit SHA rather than a tag, so that the owner of an
+# action cannot change what runs here by moving `v4`. That closes a supply-chain
+# path and opens a different one: a SHA never updates, so a pinned action stays on
+# the version it was pinned to forever, including after a security fix.
+#
+# Dependabot is what makes the pin safe rather than merely strict. It raises a pull
+# request with the new SHA, so an update is a reviewed change with a diff instead of
+# something that happened silently on the next run.
+#
+# Two separate mechanisms, and they are easy to confuse:
+#   * Dependabot *security* updates are a repository setting, are enabled, and fire
+#     whenever an advisory matches — independent of this file.
+#   * The *version* updates configured here are routine housekeeping and fire on the
+#     schedule below.
+#
+# The schedule is monthly, not weekly, and that is a deliberate choice for a project
+# whose author is away for long stretches: thirteen weekly pull requests waiting on
+# return is noise that gets bulk-closed, and a batch that gets bulk-closed teaches
+# the next reader to ignore the next one. Anything genuinely urgent arrives through
+# the security channel above, which does not wait for this schedule.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    # The pin is by SHA and the readable version lives in a trailing comment, so
+    # updates must carry it forward or the next reader loses the only human-legible
+    # record of which release a forty-character hash refers to.
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: chore
+    labels:
+      - dependencies
+    # Grouped so that a routine refresh is one pull request to read rather than
+    # nine. Security updates are not grouped and are not affected by this.
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
