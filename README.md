@@ -489,8 +489,8 @@ make lint test    # zero-warning gate: ruff, mypy --strict, pytest
 
 Python 3.12; dependencies and the toolchain are managed with [uv](https://docs.astral.sh/uv/).
 
-The gate is clean at close: ruff with no findings, `mypy --strict` over 57 source files with no
-issues, and 346 passing tests with one skipped — 4,820 lines of source against 7,425 lines of test.
+The gate is clean: ruff with no findings, `mypy --strict` over 65 source files with no
+issues, and 459 passing tests with one skipped — 5,670 lines of source against 9,470 lines of test.
 Several of those tests check this README rather than the code: exit codes named in the prose are read
 back out of the command definitions, and a documented command that does not exist fails the build.
 Every check has a companion that plants the defect it looks for and asserts it is reported, because a

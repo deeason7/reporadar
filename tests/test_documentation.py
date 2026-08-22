@@ -29,6 +29,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 CLI = REPO / "src/reporadar/cli.py"
 SRC = REPO / "src"
@@ -251,3 +253,96 @@ def test_a_bracketed_diagram_label_is_not_reported() -> None:
     commands = exit_codes_from_code()
     planted = [("planted", "[GH Archive hourly] -> [Parquet lake] -> [Kafka] -> [TimescaleDB]")]
     assert findings_for(planted, commands) == []
+
+
+# --- The gate figures in the README ------------------------------------------
+#
+# The README states the size of the gate — file counts, test count, lines of
+# source and test. Those are the most drift-prone claims in the whole document:
+# every feature moves all four at once, and nothing was reading them. They went
+# stale by 8 source files, 109 tests and 1,950 lines before anyone noticed, and
+# the reason is structural rather than careless — a number in prose has no
+# referent that anything dereferences.
+#
+# So they are re-derived here from the tree, and the directories are read out of
+# `pyproject.toml`'s own mypy scope rather than listed again. A list here would be
+# a second copy of "what mypy checks", which is precisely the rot this file exists
+# to prevent.
+
+README_TEXT = (REPO / "README.md").read_text(encoding="utf-8")
+
+
+def _mypy_dirs() -> list[str]:
+    """The directories mypy checks, read from the config that makes it true."""
+    config = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    block = re.search(r"\[tool\.mypy\](.*?)(?=\n\[|\Z)", config, re.DOTALL)
+    assert block, "no [tool.mypy] section — the derivation below has no source"
+    files = re.search(r"files\s*=\s*\[([^\]]+)\]", block.group(1))
+    assert files, "[tool.mypy] has no `files` — cannot derive what is checked"
+    return re.findall(r'"([^"]+)"', files.group(1))
+
+
+def _py_files(*dirs: str) -> list[Path]:
+    return sorted(p for d in dirs for p in (REPO / d).rglob("*.py"))
+
+
+def _line_count(*dirs: str) -> int:
+    r"""Count newlines, not ``splitlines()`` — and the difference is not pedantry.
+
+    ``splitlines()`` also breaks on U+2028 and seven other characters that are
+    legal *unescaped* inside a Python string literal, so one source file carrying
+    one would be counted as two lines. That is the same defect
+    ``test_ndjson_lines.py`` guards against for records, and that guard caught
+    this function when it was first written the obvious way — in a file whose own
+    docstring is about prose drifting from the code it describes.
+
+    ``count("\n")`` is also exactly what ``wc -l`` reports, which is what a reader
+    checking this figure by hand will actually run.
+    """
+    return sum(p.read_text(encoding="utf-8").count("\n") for p in _py_files(*dirs))
+
+
+def _claimed(pattern: str) -> int:
+    """One figure out of the README, failing loudly if the sentence was reworded."""
+    match = re.search(pattern, README_TEXT)
+    assert match, (
+        f"the README no longer contains a figure matching {pattern!r}. If the "
+        "sentence was reworded, update this pattern — a check that silently stops "
+        "matching is worse than no check, because it keeps reporting success."
+    )
+    return int(match.group(1).replace(",", ""))
+
+
+def test_the_readme_source_file_count_matches_what_mypy_checks() -> None:
+    assert _claimed(r"`mypy --strict` over ([\d,]+) source files") == len(_py_files(*_mypy_dirs()))
+
+
+def test_the_readme_line_counts_match_the_tree() -> None:
+    assert _claimed(r"([\d,]+) lines of source against") == _line_count("src")
+    assert _claimed(r"lines of source against ([\d,]+) lines of test") == _line_count("tests")
+
+
+def test_the_readme_test_count_matches_the_suite(request: pytest.FixtureRequest) -> None:
+    """Counted from this run's own collection, which is the only number that
+    cannot disagree with the suite.
+
+    Skipped under a filtered run (`-k`, a single file), because there the
+    collection is deliberately partial and asserting against it would fail for a
+    reason that has nothing to do with the README.
+    """
+    collected = len(request.session.items)
+    if collected < 100:
+        pytest.skip(f"filtered run ({collected} collected) — not the whole suite")
+    # One test in the suite is skipped, and the README says so separately; the
+    # claim is about how many pass, so the skipped one is not in the figure.
+    assert _claimed(r"([\d,]+) passing tests with one skipped") == collected - 1
+
+
+def test_a_stale_figure_is_actually_reported() -> None:
+    """The control. Every check above compares a number parsed from prose against
+    one derived from the tree — and if the parse quietly returned the derived
+    value, or the comparison were inverted, all three would pass forever."""
+    stale = README_TEXT.replace("lines of source against", "999 lines of source against")
+    match = re.search(r"([\d,]+) lines of source against", stale)
+    assert match and int(match.group(1)) == 999
+    assert int(match.group(1)) != _line_count("src"), "control: a planted wrong figure matched"
