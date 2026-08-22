@@ -36,6 +36,7 @@ from reporadar.ingest.aggregate import (
 )
 from reporadar.ingest.archive import hour_filename
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 DAY = date(2026, 7, 22)
 
 
@@ -370,3 +371,77 @@ def test_the_aggregate_carries_no_actor_login_or_payload(tmp_path: Path) -> None
     for path in (report.ecosystem_path, report.repo_path):
         columns = {c.lower() for c in _read(path)[0]}
         assert not columns & {"actor_login", "payload", "org_login", "actor", "email"}
+
+
+# --- The committed history, as an artifact ------------------------------------
+#
+# The tests above check the function. These check the thing the function has
+# already written into the repository, which is a different subject with a
+# different failure mode: the function can be correct today and still have left
+# a decade of files that disagree with each other.
+#
+# This exists because it happened. Thirteen days were written with zone-aware
+# timestamps; a dependency problem forced the column back to naive, and the next
+# day was written the new way. DuckDB read the mixed set without complaining --
+# it coerces -- so nothing failed, and the only visible symptom was a re-run
+# producing a file 249 bytes different from the one it replaced.
+#
+# ⇒ 🔑 A permanent archive's schema is not checked by anything that reads it
+#   leniently, and every reader is lenient until the one that is not.
+
+HISTORY = REPO_ROOT / "aggregates"
+
+
+def _schema(path: Path) -> tuple[tuple[str, str], ...]:
+    con = duckdb.connect()
+    try:
+        rows = con.execute(
+            "SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet($f))",
+            {"f": str(path)},
+        ).fetchall()
+    finally:
+        con.close()
+    return tuple((str(name), str(kind)) for name, kind in rows)
+
+
+@pytest.mark.parametrize("grain", ["ecosystem", "repo"])
+def test_every_committed_day_has_the_same_schema(grain: str) -> None:
+    """One schema per grain, across the whole history, forever.
+
+    A day written with a different column type is not a failure anyone will see:
+    readers coerce, and the archive keeps growing around the inconsistency until
+    something strict finally reads it — by which time the divergent days are
+    years old and the reason is forgotten.
+    """
+    files = sorted(HISTORY.glob(f"{grain}/dt=*/*.parquet"))
+    if not files:
+        pytest.skip(f"no committed {grain} history in this checkout")
+
+    schemas: dict[tuple[tuple[str, str], ...], list[str]] = {}
+    for path in files:
+        schemas.setdefault(_schema(path), []).append(path.parent.name)
+
+    # The denominator, on screen, before the verdict.
+    assert len(schemas) == 1, (
+        f"scanned {len(files)} {grain} file(s) and found {len(schemas)} different schemas: "
+        + " | ".join(
+            f"{len(days)} day(s) from {sorted(days)[0]}: "
+            + ", ".join(f"{n}:{t}" for n, t in schema)
+            for schema, days in schemas.items()
+        )
+    )
+
+
+def test_the_schema_check_can_actually_fail(tmp_path: Path) -> None:
+    """The control. `_schema` returning a constant, or the comparison being made
+    on something that cannot differ, would make the test above pass over any
+    history at all."""
+    con = duckdb.connect()
+    try:
+        a, b = tmp_path / "a.parquet", tmp_path / "b.parquet"
+        con.execute(f"COPY (SELECT CAST(1 AS BIGINT) AS x) TO '{a}' (FORMAT PARQUET)")
+        con.execute(f"COPY (SELECT CAST(1 AS VARCHAR) AS x) TO '{b}' (FORMAT PARQUET)")
+    finally:
+        con.close()
+    assert _schema(a) != _schema(b), "control: two different column types compared equal"
+    assert _schema(a) == _schema(a), "control: the same file compared unequal to itself"
