@@ -93,6 +93,7 @@ def settings(tmp_path: Path) -> Settings:
         "kafka_topic_partitions": 2,
         "postgres_dsn": PostgresDsn("postgresql://reporadar:test@db.invalid:5432/reporadar"),
         "data_dir": tmp_path / "data",
+        "aggregate_dir": tmp_path / "aggregates",
         "seen_window": 1_000,
     }
     # The docstring above is a claim; this is what keeps it true. A field added to

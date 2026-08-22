@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     # here and pg_store() fails loudly when it is missing — polling needs no DB.
     postgres_dsn: PostgresDsn | None = None
     data_dir: Path = Path("data")
+    # Deliberately NOT derived from `data_dir` like the three paths below, and the
+    # reason is the whole point of these files: `data/` is gitignored because it
+    # holds regenerable bulk, while the aggregates are the one output that must be
+    # committed and kept forever. Deriving them from `data_dir` would put the only
+    # permanent artifact inside the directory whose entire purpose is to be
+    # disposable, one `.gitignore` line away from never being committed at all.
+    aggregate_dir: Path = Path("aggregates")
     # How many recent event ids each poll loop remembers. Bigger costs memory and
     # buys a longer duplication horizon; it is a deployment-shaped number (traffic
     # and cycle interval), which is why it is settable rather than compiled in.

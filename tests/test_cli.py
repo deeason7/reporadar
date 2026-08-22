@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,8 @@ from reporadar import cli
 from reporadar.analysis.capture import CaptureReport
 from reporadar.config import Settings
 from reporadar.github.events import RawEvent
+from reporadar.ingest.aggregate import AggregateReport
+from reporadar.ingest.gaps import GAP_EXIT_CODE, HistoryReport
 from reporadar.ingest.ledger import HourStatus
 from reporadar.ingest.metrics import ArchiveCounters, ConsumeCounters, PollCounters
 from reporadar.ingest.repair import (
@@ -1260,3 +1262,151 @@ def test_marts_status_says_when_the_marts_have_never_been_built(
 
     assert result.exit_code == STALE_EXIT_CODE
     assert "never been built" in result.output
+
+
+def test_aggregate_defaults_to_yesterday_and_passes_settings_through(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    """The date arithmetic lives here rather than in the schedule that calls it —
+    an expression in a cron file is untested code in the one place nobody reads
+    for a year. So it is the command's own work, and it is asserted."""
+    calls: dict[str, object] = {}
+
+    def fake_aggregate(day: date, **kwargs: Any) -> AggregateReport:
+        calls.update(day=day, **kwargs)
+        return AggregateReport(
+            day=day,
+            ecosystem_path=Path("eco.parquet"),
+            repo_path=Path("repo.parquet"),
+            events=10,
+            repo_rows=2,
+            hours_written=24,
+            hours_present=24,
+            hours_missing=(),
+            min_events=20,
+            bytes_written=1234,
+        )
+
+    monkeypatch.setattr(cli, "aggregate_day", fake_aggregate)
+
+    result = runner.invoke(cli.app, ["aggregate"])
+
+    assert result.exit_code == 0
+    assert calls["day"] == datetime.now(UTC).date() - timedelta(days=1)
+    assert calls["aggregate_dir"] == pinned_cli_settings.aggregate_dir
+    assert calls["archive_dir"] == pinned_cli_settings.archive_dir
+    assert calls["base_url"] == pinned_cli_settings.archive_base
+
+
+def test_aggregate_takes_an_explicit_day_positionally(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    """A bare default would have made this `--day`, and every caller written
+    against the help text passes it positionally."""
+    calls: dict[str, object] = {}
+
+    def fake_aggregate(day: date, **kwargs: Any) -> AggregateReport:
+        calls["day"] = day
+        return AggregateReport(
+            day=day,
+            ecosystem_path=Path("eco.parquet"),
+            repo_path=Path("repo.parquet"),
+            events=1,
+            repo_rows=1,
+            hours_written=24,
+            hours_present=24,
+            hours_missing=(),
+            min_events=20,
+            bytes_written=1,
+        )
+
+    monkeypatch.setattr(cli, "aggregate_day", fake_aggregate)
+
+    result = runner.invoke(cli.app, ["aggregate", "2026-07-07"])
+
+    assert result.exit_code == 0
+    assert calls["day"] == date(2026, 7, 7)  # parsed, not passed through as a string
+
+
+def test_an_incomplete_day_is_written_and_still_exits_non_zero(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    """The 23 hours that arrived are worth keeping — the archive publishes an hour
+    once. But a day missing an hour must not be recorded as a whole day, because
+    every later reader treats these files as settled history."""
+
+    def fake_aggregate(day: date, **kwargs: Any) -> AggregateReport:
+        return AggregateReport(
+            day=day,
+            ecosystem_path=Path("eco.parquet"),
+            repo_path=Path("repo.parquet"),
+            events=10,
+            repo_rows=2,
+            hours_written=23,
+            hours_present=23,
+            hours_missing=(13,),
+            min_events=20,
+            bytes_written=1234,
+        )
+
+    monkeypatch.setattr(cli, "aggregate_day", fake_aggregate)
+
+    result = runner.invoke(cli.app, ["aggregate", "2026-07-07"])
+
+    assert result.exit_code == INCOMPLETE_EXIT_CODE
+    assert "INCOMPLETE" in result.stdout
+    assert "23/24" in result.stdout
+    # Names the hour and the command that repairs it, rather than only the condition.
+    assert "[13]" in result.stdout
+    assert "reporadar aggregate 2026-07-07" in result.stdout
+
+
+def test_history_status_is_quiet_and_zero_on_a_healthy_history(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    def fake_scan(aggregate_dir: Path, **kwargs: Any) -> HistoryReport:
+        return HistoryReport(
+            aggregate_dir=aggregate_dir,
+            as_of=date(2026, 8, 22),
+            expected_latest=date(2026, 8, 20),
+            first_day=date(2026, 8, 1),
+            latest_day=date(2026, 8, 21),
+            days_scanned=21,
+            missing_days=(),
+            partial_days=(),
+        )
+
+    monkeypatch.setattr(cli, "scan_history", fake_scan)
+
+    result = runner.invoke(cli.app, ["history-status"])
+
+    assert result.exit_code == 0
+    # The denominator is printed even when nothing is wrong — a clean verdict over
+    # an unstated number of days is the shape of the bug this project keeps finding.
+    assert "scanned 21 day(s)" in result.stdout
+
+
+def test_history_status_exits_non_zero_when_the_clock_has_stopped(
+    monkeypatch: pytest.MonkeyPatch, pinned_cli_settings: Settings
+) -> None:
+    """This is the whole point: an unattended schedule that stops must fail a run,
+    because a failed run sends mail and a silent one does not."""
+
+    def fake_scan(aggregate_dir: Path, **kwargs: Any) -> HistoryReport:
+        return HistoryReport(
+            aggregate_dir=aggregate_dir,
+            as_of=date(2026, 8, 22),
+            expected_latest=date(2026, 8, 20),
+            first_day=date(2026, 8, 1),
+            latest_day=date(2026, 8, 10),
+            days_scanned=10,
+            missing_days=(),
+            partial_days=(),
+        )
+
+    monkeypatch.setattr(cli, "scan_history", fake_scan)
+
+    result = runner.invoke(cli.app, ["history-status"])
+
+    assert result.exit_code == GAP_EXIT_CODE
+    assert "STALLED" in result.stdout

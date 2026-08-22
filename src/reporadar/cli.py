@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import typer
 
 from reporadar.analysis.capture import capture_rate, type_counts
 from reporadar.config import get_settings
+from reporadar.ingest.aggregate import DEFAULT_MIN_EVENTS, HOURS_PER_DAY, aggregate_day
 from reporadar.ingest.archive import download_hour
 from reporadar.ingest.consumer import consume_stream
 from reporadar.ingest.converge import (
@@ -20,6 +21,7 @@ from reporadar.ingest.converge import (
     converge_forever,
     converge_once,
 )
+from reporadar.ingest.gaps import DEFAULT_GRACE_DAYS, GAP_EXIT_CODE, scan_history
 from reporadar.ingest.kafka import kafka_dead_letter_sink, kafka_sink, kafka_source
 from reporadar.ingest.ledger import create_schema
 from reporadar.ingest.metrics import ArchiveCounters, ConsumeCounters, PollCounters
@@ -292,6 +294,83 @@ def backfill(
         # See INCOMPLETE_EXIT_CODE — the same fact `repair-lake` reports, so it is the
         # same constant rather than a fourth spelling of 3.
         raise typer.Exit(code=INCOMPLETE_EXIT_CODE)
+
+
+@app.command()
+def aggregate(
+    # An Argument, not an inferred option: a bare default would make this
+    # `--day`, and every caller written against the docstring — the workflow, the
+    # Makefile — passes it positionally like `backfill` and `fetch-archive` do.
+    day: str | None = typer.Argument(default=None),
+    min_events: int = DEFAULT_MIN_EVENTS,
+    keep_source: bool = False,
+    keep_lake: bool = False,
+) -> None:
+    """Reduce one archive day to the two small Parquet files kept permanently.
+
+    DAY defaults to yesterday (UTC), which is what a daily schedule wants and is
+    computed here rather than in the caller: a date arithmetic expression in a
+    cron file is untested code in the one place nobody looks at for a year.
+    """
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    settings = get_settings()
+    target = (
+        date.fromisoformat(day) if day is not None else datetime.now(UTC).date() - timedelta(days=1)
+    )
+
+    report = aggregate_day(
+        target,
+        archive_dir=settings.archive_dir,
+        lake_dir=settings.lake_dir,
+        aggregate_dir=settings.aggregate_dir,
+        min_events=min_events,
+        base_url=settings.archive_base,
+        keep_source=keep_source,
+        keep_lake=keep_lake,
+    )
+    typer.echo(f"day {report.day}: {report.as_dict()}")
+    typer.echo(f"  ecosystem -> {report.ecosystem_path}")
+    typer.echo(f"  repo      -> {report.repo_path} ({report.repo_rows:,} rows)")
+
+    if not report.complete:
+        # Written, and still reported as incomplete. The 23 hours that arrived are
+        # worth keeping — the archive publishes an hour once, so refusing to write
+        # would lose them permanently — but a day missing an hour must not be
+        # recorded as a whole day, because every later reader treats these files
+        # as settled history and nothing downstream can tell a short day from a
+        # quiet one. `hours_present` carries the same fact in the data itself.
+        typer.echo(
+            f"INCOMPLETE: {report.hours_present}/{HOURS_PER_DAY} hours present"
+            f"{f'; unavailable: {list(report.hours_missing)}' if report.hours_missing else ''}. "
+            f"Re-run `reporadar aggregate {report.day}` once the archive publishes them."
+        )
+        raise typer.Exit(code=INCOMPLETE_EXIT_CODE)
+
+
+@app.command(name="history-status")
+def history_status(grace_days: int = DEFAULT_GRACE_DAYS, as_of: str | None = None) -> None:
+    """Report whether the accumulated history is still gaining a day per day.
+
+    Exits non-zero when the history has stalled or has holes, so an unattended
+    schedule fails loudly instead of succeeding at nothing. Partial days are
+    reported and deliberately do not fail — see `gaps` for why a permanently
+    failing gate is a gate somebody turns off.
+    """
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    settings = get_settings()
+    report = scan_history(
+        settings.aggregate_dir,
+        as_of=date.fromisoformat(as_of) if as_of else datetime.now(UTC).date(),
+        grace_days=grace_days,
+    )
+    for line in report.lines():
+        typer.echo(line)
+    if not report.healthy:
+        raise typer.Exit(code=GAP_EXIT_CODE)
 
 
 @app.command()

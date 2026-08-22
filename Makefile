@@ -1,5 +1,5 @@
 .PHONY: setup lint fmt test up down logs provision up-app down-app logs-app image marts \
-        marts-status marts-converge grafana-grants site
+        marts-status marts-converge grafana-grants site aggregate history
 
 # One-time dev setup: environment + hooks
 setup:
@@ -18,6 +18,18 @@ fmt:
 
 test:
 	uv run pytest -q
+
+# Yesterday's archive day, reduced to the two aggregates that are kept forever.
+# Idempotent: re-running a day replaces it rather than appending, so a retry after
+# a partial archive is always safe. Pass DAY=YYYY-MM-DD for any other day.
+aggregate:
+	uv run reporadar aggregate $(DAY)
+
+# Is anything still adding a day per day? Exits non-zero on a stall or a hole.
+# Runs inside the scheduled job, because a commit made by that job does not start
+# CI — so this is the only place the check can actually fire.
+history:
+	uv run reporadar history-status
 
 # Rebuild the public result page from the lake, in place.
 #
