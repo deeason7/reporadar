@@ -188,10 +188,19 @@ def _deduped_cte(sources: str) -> str:
     amount that varies with how busy the boundary was, which is the worst kind of
     error: small, always present, and never the same.
 
-    ``created_at AT TIME ZONE 'UTC'`` — the archive stores the timestamp without a
-    zone, meaning UTC by convention. A plain cast reads it as *local* time and
-    moves every event by the reader's offset; on a UTC machine the two spellings
-    are indistinguishable, so the bug only ever appears for somebody else.
+    ``created_at`` is carried through **naive, exactly as the lake and the
+    published archive store it**, and it is UTC — the archive publishes UTC and
+    nothing here shifts it.
+
+    🔴 It was briefly written ``created_at AT TIME ZONE 'UTC'``, to make the zone
+    explicit in the file rather than conventional. That is better data and it cost
+    a dependency: DuckDB routes that expression through ``pytz``, which is not a
+    dependency of this package. It passed locally — the optional transformation
+    extra pulls ``pytz`` in — and failed on a machine that installed only what the
+    package declares. ⇒ 🔑 **A gate run in a richer environment than the one that
+    matters cannot see a missing dependency**, and "it passes on my machine" is
+    that sentence with the environment left out. The conversion belongs downstream,
+    where the transformation layer already does it and already has the dependency.
 
     ``hive_partitioning=false`` — the parquet files sit inside ``dt=``/``hr=``
     directories and also carry ``dt`` and ``hr`` as real columns. With Hive
@@ -211,7 +220,7 @@ def _deduped_cte(sources: str) -> str:
                 CAST(actor ->> 'id' AS BIGINT)      AS actor_id,
                 CAST(repo ->> 'id' AS BIGINT)       AS repo_id,
                 repo ->> 'name'                     AS repo_name,
-                created_at AT TIME ZONE 'UTC'       AS created_at,
+                created_at                          AS created_at,
                 dt                                  AS archive_day,
                 hr                                  AS archive_hour
             FROM read_parquet({sources}, hive_partitioning=false)

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import gzip
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -331,24 +331,34 @@ def test_the_staged_part_file_never_survives_a_refusal(tmp_path: Path) -> None:
     assert report.ecosystem_path.exists()
 
 
-def test_timestamps_are_written_with_a_zone_rather_than_inheriting_the_readers(
+def test_timestamps_are_naive_and_unshifted_exactly_as_the_archive_publishes_them(
     tmp_path: Path,
 ) -> None:
-    """The archive stores the timestamp without a zone, meaning UTC by convention.
-    On a UTC machine the two spellings are indistinguishable, so this bug would
-    only ever appear for somebody else — which is why it is asserted here."""
+    """Naive, and the value is asserted rather than only the type.
+
+    A zoned column would be better data and would cost a dependency — DuckDB
+    routes ``AT TIME ZONE`` through ``pytz``, which this package does not declare.
+    So the convention stays where the archive already put it, and what is checked
+    is the thing that would actually break: that no reader's local offset has been
+    applied. The fixture writes 00:00, and on any machine in any zone this must
+    read back as 00:00.
+    """
     _stage_full_day(tmp_path / "archive")
     report = _run(tmp_path)
 
     con = duckdb.connect()
     try:
-        (kind,) = con.execute(
-            "SELECT typeof(first_event_at) FROM read_parquet($f)",
+        kind, first = con.execute(
+            "SELECT typeof(first_event_at), first_event_at FROM read_parquet($f)",
             {"f": str(report.ecosystem_path)},
-        ).fetchone() or ("",)
+        ).fetchone() or ("", None)
     finally:
         con.close()
-    assert "WITH TIME ZONE" in kind.upper()
+
+    assert "WITH TIME ZONE" not in kind.upper(), (
+        "a zoned column reintroduces the pytz dependency that CI does not install"
+    )
+    assert first == datetime(2026, 7, 22, 0, 0), "an offset was applied somewhere"
 
 
 def test_the_aggregate_carries_no_actor_login_or_payload(tmp_path: Path) -> None:
