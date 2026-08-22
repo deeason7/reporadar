@@ -8,8 +8,7 @@ the other against a real warehouse — and it is only *safe* while they agree.
 
 🔴 **This file exists because that safety was asserted and not checked.**
 ``aggregate.py``'s docstring said *"A test asserts the agreement rather than
-trusting this paragraph"*, and the decision record repeated it. No such test
-existed. The sentence was written in the same breath as the design it describes,
+trusting this paragraph"*, and it was repeated elsewhere. No such test existed. The sentence was written in the same breath as the design it describes,
 which is exactly when a claim about verification is least likely to be verified.
 ⇒ 🔑 **"A test asserts this" is itself a claim, and it is the one kind of claim
 that makes every other claim beside it look checked.**
