@@ -1,5 +1,13 @@
 # Zero-warning gate on every push/PR: style, format, types, tests.
 # The test suite needs no external services, so the job stays fast.
+# Third-party actions are pinned to commit SHAs, not tags. A tag is mutable: the
+# owner of an action can move `v4` to any commit at any time, and every workflow
+# that references it runs the new code on the next build with no diff anywhere in
+# this repository. That is the standard supply-chain path into a repository, and
+# it matters more here than usual because a scheduled job in this repo holds
+# `contents: write` and runs unattended for months at a time. The tag each SHA
+# corresponds to is kept in the comment so a human can still read the version.
+
 name: ci
 
 on:
@@ -7,13 +15,21 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only, stated rather than inherited. Nothing here writes to the repository:
+# every job checks out, builds and asserts. Left unset the jobs would take the
+# repository-wide default, which is broader and can be widened elsewhere without
+# anyone editing this file — so the narrow grant is written down where the code
+# that relies on it lives.
+permissions:
+  contents: read
+
 jobs:
   lint-type-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
         with:
           python-version: "3.12"
 
@@ -34,7 +50,7 @@ jobs:
   compose-validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Validate the compose file (syntax + variable resolution)
         env:
           POSTGRES_PASSWORD: ci-validate
@@ -136,9 +152,9 @@ jobs:
       REPORADAR_POSTGRES_DSN: postgresql://reporadar:ci-validate@localhost:5432/reporadar
       REPORADAR_DATA_DIR: /tmp/lake-fixture
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
         with:
           python-version: "3.12"
 
@@ -395,7 +411,7 @@ jobs:
   image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       - name: Build the runtime image
         run: docker build -t reporadar:ci .
@@ -426,7 +442,7 @@ jobs:
   dashboards:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       - name: Check what the provisioning actually says
         # The dashboard is provisioned from files, which makes it reviewable — and

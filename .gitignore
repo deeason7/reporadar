@@ -16,8 +16,12 @@ htmlcov/
 .env.*
 !.env.example
 
-# Local data (raw archive hours, live poll samples — regenerable, often large)
-data/
+# Local data (raw archive hours, live poll samples — regenerable, often large).
+# Anchored with a leading slash. Unanchored, `data/` matches a directory of that
+# name at ANY depth, so a future `docs/data/` or `tests/data/` would be ignored by
+# a rule written about this one — silently, which is the only way ignore rules
+# ever go wrong.
+/data/
 
 # OS / editors
 .DS_Store
@@ -32,3 +36,12 @@ dbt/.user.yml
 
 # Logs
 *.log
+# ...except this one, and the exception is load-bearing rather than tidy.
+# `aggregates/runs.log` is the scheduled job's run record: on a day the job
+# produces no data it is the ONLY evidence the job ran at all, and committing it
+# is also what stops a public repository's scheduled workflow being disabled after
+# 60 days of no activity. `*.log` above swallowed it — so the job would have run
+# green, staged nothing, committed nothing, reported success, and been switched
+# off mid-absence with no error anywhere. Caught by `git check-ignore`, not by
+# reading this file. See tests/test_committed_paths.py, which asserts it.
+!/aggregates/runs.log

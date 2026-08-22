@@ -1,0 +1,167 @@
+# Reduce yesterday's public event archive to two small Parquet files and keep them.
+#
+# The raw feed is ~325 MB/day, so a year of it is ~116 GB and cannot live in a git
+# repository. The daily aggregates are ~310 KB, which is 0.05% of that, and they
+# answer the questions the raw events were being kept for. This job is the only
+# thing that accumulates history, and everything that needs more than a few days
+# of it is waiting on this file.
+#
+# Four properties of GitHub's own behaviour shape this workflow, and each was
+# checked against the documentation rather than remembered:
+#
+#   1. Standard hosted runners are free and unmetered on public repositories, so
+#      this costs nothing and needs no billing setup. Larger runners are not free
+#      and are deliberately not used.
+#
+#   2. A scheduled workflow in a public repository is DISABLED AUTOMATICALLY after
+#      60 days with no repository activity. This job runs unattended for months at
+#      a time, so it must produce a commit on every run — including runs where the
+#      data step fails. If it ever goes 60 days without committing, the schedule
+#      is switched off and does not switch itself back on. See the run-record step.
+#
+#   3. A commit pushed with the default token does NOT start other workflows. That
+#      prevents an infinite loop, and it also means the normal CI checks will never
+#      run on the commits this job makes. So the checks that matter run HERE, in
+#      this job, before the commit — there is no second chance downstream.
+#
+#   4. Scheduled runs are delayed or dropped under load, worst at the top of the
+#      hour. Hence :17 rather than :00. A dropped run costs one day of freshness
+#      and is repaired by the next run, which re-derives from a published archive.
+
+# Third-party actions are pinned to commit SHAs, not tags. A tag is mutable: the
+# owner of an action can move `v4` to any commit at any time, and every workflow
+# that references it runs the new code on the next build with no diff anywhere in
+# this repository. That is the standard supply-chain path into a repository, and
+# it matters more here than usual because a scheduled job in this repo holds
+# `contents: write` and runs unattended for months at a time. The tag each SHA
+# corresponds to is kept in the comment so a human can still read the version.
+
+name: aggregate
+
+on:
+  schedule:
+    # 04:17 UTC — yesterday's final hour is published by ~01:00 UTC, so this
+    # leaves several hours of margin, and the odd minute avoids the busiest slot.
+    - cron: "17 4 * * *"
+  # So a human can run it by hand after an outage without waiting a day, and so
+  # the very first run can be triggered deliberately rather than by waiting.
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "Day to aggregate (YYYY-MM-DD). Blank = yesterday."
+        required: false
+        default: ""
+
+# The only permission this needs. Left implicit it would inherit the repository
+# default, which is broader and can be changed elsewhere without anyone editing
+# this file — a workflow that commits should say exactly what it may do.
+permissions:
+  contents: write
+
+# Never two at once: both would commit to the same paths and the second would
+# spend its run losing a push race. Queued rather than cancelled, so a manual run
+# cannot silently discard the scheduled one.
+concurrency:
+  group: aggregate
+  cancel-in-progress: false
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --frozen
+
+      # `continue-on-error` rather than a bare run: an incomplete day exits 3 on
+      # purpose, and that day's 23 published hours are still worth keeping. The
+      # outcome is captured and re-raised at the end, after the commit — because
+      # a failure that prevents the commit is the one failure that can kill the
+      # schedule permanently (see note 2 above).
+      - name: Aggregate
+        id: aggregate
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          if [ -n "${{ inputs.day }}" ]; then
+            uv run reporadar aggregate "${{ inputs.day }}" 2>&1 | tee /tmp/aggregate.log
+          else
+            uv run reporadar aggregate 2>&1 | tee /tmp/aggregate.log
+          fi
+
+      # The gap detector. It runs here rather than in CI because CI does not run
+      # on this job's commits (note 3). It is what turns "the schedule stopped"
+      # from an absence nobody notices into a failed run that sends mail.
+      - name: Check the history is still gaining a day
+        id: history
+        continue-on-error: true
+        run: uv run reporadar history-status 2>&1 | tee /tmp/history.log
+
+      # Deliberately plain shell, and deliberately `always()`.
+      #
+      # This is the step that keeps the schedule alive, so it must not depend on
+      # anything that could be the thing that broke: not the install, not the
+      # package, not the network. `printf` and `date` are always there. A run
+      # record is also the only evidence of what an unattended job did on a day
+      # it produced no data — without it, "ran and found nothing" and "never ran"
+      # are the same empty result, which is the failure this whole project is
+      # organised around.
+      - name: Record the run
+        if: always()
+        run: |
+          mkdir -p aggregates
+          printf '%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ) aggregate=${{ steps.aggregate.outcome }} history=${{ steps.history.outcome }} run=${{ github.run_id }}" \
+            >> aggregates/runs.log
+
+      - name: Commit
+        if: always()
+        run: |
+          # A distinct identity, so machine-authored commits are separable from
+          # the owner's at a glance and in `git log --author`. The repository's
+          # commit policy is about a person not delegating work they cannot
+          # explain; a job committing its own measured output is a different
+          # thing, and it is kept visibly different.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add aggregates
+          if git diff --staged --quiet; then
+            echo "nothing to commit"
+            exit 0
+          fi
+
+          git commit -m "data: aggregate $(date -u -d yesterday +%Y-%m-%d 2>/dev/null || date -u +%Y-%m-%d)"
+
+          # Rebase before pushing. Over months, the odds of a hand commit landing
+          # between this job's checkout and its push stop being negligible, and a
+          # rejected push here is a day of history lost for no reason.
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "push rejected, rebasing (attempt $attempt)"
+            git pull --rebase --autostash
+          done
+          echo "could not push after 3 attempts"
+          exit 1
+
+      # Last, so everything above has already committed. This is what turns a
+      # broken day into mail in an inbox rather than a silence nobody reads.
+      - name: Fail if either step failed
+        if: always()
+        run: |
+          echo "aggregate: ${{ steps.aggregate.outcome }}"
+          echo "history:   ${{ steps.history.outcome }}"
+          if [ "${{ steps.aggregate.outcome }}" != "success" ] || \
+             [ "${{ steps.history.outcome }}" != "success" ]; then
+            echo "::error::the daily aggregate did not complete cleanly — see the logs above"
+            exit 1
+          fi

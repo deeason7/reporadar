@@ -1,0 +1,4 @@
+# The daily aggregates are columnar binary. Marking them keeps git from trying to
+# diff or merge them as text, which on a file that gains one every day would make
+# every `git log -p` unreadable and every rare conflict unresolvable.
+*.parquet binary
