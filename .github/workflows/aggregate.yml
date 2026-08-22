@@ -88,10 +88,19 @@ jobs:
       - name: Aggregate
         id: aggregate
         continue-on-error: true
+        # Inputs reach the shell through `env`, never through `${{ }}` inside the
+        # script. An expression is substituted into the script text *before* a
+        # shell ever sees it, so a value containing a quote or a semicolon stops
+        # being data and becomes code. `day` is free text typed by whoever starts
+        # the run. Only accounts with write access can start one — so this is not
+        # reachable by a stranger — but the job holds `contents: write`, runs
+        # unattended for months, and the safe spelling costs one line.
+        env:
+          DAY: ${{ inputs.day }}
         run: |
           set -o pipefail
-          if [ -n "${{ inputs.day }}" ]; then
-            uv run reporadar aggregate "${{ inputs.day }}" 2>&1 | tee /tmp/aggregate.log
+          if [ -n "$DAY" ]; then
+            uv run reporadar aggregate "$DAY" 2>&1 | tee /tmp/aggregate.log
           else
             uv run reporadar aggregate 2>&1 | tee /tmp/aggregate.log
           fi
@@ -115,14 +124,26 @@ jobs:
       # organised around.
       - name: Record the run
         if: always()
+        # Same discipline as above. These three values are not attacker-supplied
+        # today — an outcome is one of four words and a run id is an integer —
+        # but "this expression happens to be safe" is a fact about today's
+        # implementation, and the whole file is read by nobody for months at a
+        # time. One spelling everywhere is cheaper than a rule with exceptions.
+        env:
+          AGG: ${{ steps.aggregate.outcome }}
+          HIST: ${{ steps.history.outcome }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           mkdir -p aggregates
           printf '%s\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ) aggregate=${{ steps.aggregate.outcome }} history=${{ steps.history.outcome }} run=${{ github.run_id }}" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ) aggregate=$AGG history=$HIST run=$RUN_ID" \
             >> aggregates/runs.log
 
       - name: Commit
         if: always()
+        env:
+          DAY: ${{ inputs.day }}
+          AGG: ${{ steps.aggregate.outcome }}
         run: |
           # A distinct identity, so machine-authored commits are separable from
           # the owner's at a glance and in `git log --author`. The repository's
@@ -144,11 +165,11 @@ jobs:
           # ~90 commits in the history claiming days that were never aggregated.
           # Over a long unattended stretch `git log` is the only summary anyone
           # reads, and a log that overstates what landed is worse than a sparse one.
-          TARGET="${{ inputs.day }}"
+          TARGET="$DAY"
           if [ -z "$TARGET" ]; then
             TARGET="$(date -u -d yesterday +%Y-%m-%d 2>/dev/null || date -u -v-1d +%Y-%m-%d)"
           fi
-          if [ "${{ steps.aggregate.outcome }}" = "success" ]; then
+          if [ "$AGG" = "success" ]; then
             git commit -m "data: aggregate $TARGET"
           else
             git commit -m "data: record a failed run for $TARGET"
@@ -171,11 +192,13 @@ jobs:
       # broken day into mail in an inbox rather than a silence nobody reads.
       - name: Fail if either step failed
         if: always()
+        env:
+          AGG: ${{ steps.aggregate.outcome }}
+          HIST: ${{ steps.history.outcome }}
         run: |
-          echo "aggregate: ${{ steps.aggregate.outcome }}"
-          echo "history:   ${{ steps.history.outcome }}"
-          if [ "${{ steps.aggregate.outcome }}" != "success" ] || \
-             [ "${{ steps.history.outcome }}" != "success" ]; then
+          echo "aggregate: $AGG"
+          echo "history:   $HIST"
+          if [ "$AGG" != "success" ] || [ "$HIST" != "success" ]; then
             echo "::error::the daily aggregate did not complete cleanly — see the logs above"
             exit 1
           fi
