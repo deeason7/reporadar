@@ -21,7 +21,7 @@ dependencies = [
     "typer>=0.12,<1.0",
 
     # Async Kafka client — the producer side of the streaming path
-    "aiokafka>=0.11,<0.13",
+    "aiokafka>=0.11,<0.15",
 
     # Async Postgres driver — the validated store writes to TimescaleDB, which
     # is Postgres on the wire, so the driver is the only thing the store needs
@@ -52,7 +52,7 @@ dev = [
     "pytest-asyncio>=0.23,<2.0",
     "respx>=0.21,<1.0",            # httpx transport mocking — the test suite never touches the network
     "ruff>=0.15,<1.0",
-    "mypy>=1.13,<2.0",
+    "mypy>=1.13,<3.0",
     "pre-commit>=4.0,<6.0",
 ]
 
