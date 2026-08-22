@@ -138,7 +138,21 @@ jobs:
             exit 0
           fi
 
-          git commit -m "data: aggregate $(date -u -d yesterday +%Y-%m-%d 2>/dev/null || date -u +%Y-%m-%d)"
+          # The message says what the commit actually contains, which is not always
+          # what the run set out to do. A failed run still commits -- that is the
+          # point of the run record -- and labelling it "aggregate <day>" would put
+          # ~90 commits in the history claiming days that were never aggregated.
+          # Over a long unattended stretch `git log` is the only summary anyone
+          # reads, and a log that overstates what landed is worse than a sparse one.
+          TARGET="${{ inputs.day }}"
+          if [ -z "$TARGET" ]; then
+            TARGET="$(date -u -d yesterday +%Y-%m-%d 2>/dev/null || date -u -v-1d +%Y-%m-%d)"
+          fi
+          if [ "${{ steps.aggregate.outcome }}" = "success" ]; then
+            git commit -m "data: aggregate $TARGET"
+          else
+            git commit -m "data: record a failed run for $TARGET"
+          fi
 
           # Rebase before pushing. Over months, the odds of a hand commit landing
           # between this job's checkout and its push stop being negligible, and a
