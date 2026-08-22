@@ -383,17 +383,17 @@ the right number.</strong></p>
 <p>The lake is not in the repository — it is 1.35 GiB (1,448,310,660 bytes) of public data that the
 publisher still serves, so it is rebuilt rather than shipped. Everything below runs locally, and
 needs no account with anyone.</p>
-<pre><code>git clone &lt;this repository&gt; &amp;&amp; cd reporadar
-make setup                                   # uv sync, plus the commit hooks
+<pre><code>git clone https://github.com/deeason7/reporadar &amp;&amp; cd reporadar
+make setup                                                       # uv sync, plus the commit hooks
 
-cp .env.example .env                         # set POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD
-make up                                      # Kafka + TimescaleDB, bound to localhost only
+cp .env.example .env                                             # set POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD
+make up                                                          # Kafka + TimescaleDB, bound to localhost only
 
-reporadar backfill 2026-07-22 2026-07-29     # fetch those days from GH Archive
-reporadar verify                             # does the hours ledger match what is on disk?
+reporadar backfill 2026-07-22 2026-07-29                         # fetch those days from GH Archive
+reporadar verify                                                 # does the hours ledger match what is on disk?
 
-make site                                    # re-derive every figure above into docs/index.html
-make lint test                               # ruff, mypy --strict, pytest
+make site                                                        # re-derive every figure above into docs/index.html
+make lint test                                                   # ruff, mypy --strict, pytest
 </code></pre>
 <p>That range names 8 calendar days and this lake holds the 4 of them
 that were captured; hours the publisher never published are a settled answer rather than an
@@ -409,6 +409,8 @@ unchanged lake produces an identical file.</p>
 <p>This page is a file, not a service: it is generated from the lake, committed, and served as static
 HTML. The pipeline behind it is not hosted anywhere and is not intended to be — it runs locally, and
 reproducing it from the repository is the point. MIT licensed.</p>
+<p>Source, and the commands that rebuild every figure above:
+<a href="https://github.com/deeason7/reporadar">github.com/deeason7/reporadar</a>.</p>
 </footer>
 </main>
 </body>

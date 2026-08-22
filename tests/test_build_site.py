@@ -325,15 +325,61 @@ def test_the_page_is_a_whole_document_with_a_real_title() -> None:
 
 
 def test_the_page_needs_nothing_from_the_network() -> None:
+    """The page must render from the file alone, offline, years from now.
+
+    🔴 This asserted `"http" not in page` until 2026-08-22, which is broader than
+    the property it is named for and was hiding a real defect. A page that may not
+    contain the substring `http` cannot print the URL of the repository it tells
+    the reader to clone — so that line read `git clone <this repository>`, a
+    literal placeholder, on the one artifact most likely to be read on its own.
+    The page also carried no link of any kind back to its own source.
+
+    ⇒ 🔑 **The distinction is what the *browser* fetches versus what the *reader*
+    chooses to follow.** A stylesheet, script, font or image is a dependency: the
+    page is broken without it. An anchor is not: the page renders identically
+    offline and the link simply waits. The original assertion could not tell those
+    apart, and the safe-looking one is the one that removed information.
+    """
     page = render(figures())
-    # No stylesheet, no script, no font, no image, no import — the page has to
-    # render from the file alone, offline, years from now.
-    assert "http" not in page
+
+    # Resources a browser would fetch on its own. These are the real subject.
     assert "<script" not in page
     assert "<link" not in page
     assert "@import" not in page
     assert "url(" not in page
     assert "<img" not in page
+    assert "src=" not in page
+
+    # No remote URL may appear anywhere a browser would act on it. Anchors are
+    # allowed; everything else that could carry a URL is not.
+    for attribute in ("src", "srcset", "poster", "data", "action", "background"):
+        assert f"{attribute}=" not in page, f"{attribute}= could fetch a remote resource"
+
+    # Every `http` that survives must be inside an anchor or ordinary text, never
+    # an element that loads something. Checked positionally rather than assumed.
+    for index in (i for i in range(len(page)) if page.startswith("http", i)):
+        before = page[max(0, index - 200) : index]
+        tag_start = before.rfind("<")
+        tag = before[tag_start:] if tag_start != -1 else ""
+        assert not tag.startswith(("<link", "<script", "<img", "<iframe", "<source")), (
+            f"a URL appears inside a fetching element: ...{before[-80:]!r}"
+        )
+
+
+def test_the_network_check_can_still_fail() -> None:
+    """The control. The assertions above were widened, and a widened check is
+    exactly the kind that stops catching the thing it was written for."""
+    page = render(figures())
+
+    planted = page.replace("<footer>", '<link rel="stylesheet" href="https://cdn.example/x.css">')
+    assert "<link" in planted, "control: the planted stylesheet did not land"
+
+    # And the positional check must object to a URL inside a fetching element.
+    hostile = '<img src="https://example.invalid/tracker.gif">'
+    index = hostile.find("http")
+    before = hostile[:index]
+    tag = before[before.rfind("<") :]
+    assert tag.startswith("<img"), "control: a fetching element read as safe"
 
 
 def test_the_page_answers_to_both_colour_schemes() -> None:

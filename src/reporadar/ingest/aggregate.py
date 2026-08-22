@@ -20,9 +20,20 @@ the lake by this module, and the same numbers are computed from the lake by
 ``dbt`` (``ecosystem_daily``, ``repo_daily``). Two derivations of one quantity is
 normally a defect — here it is deliberate, because they run in different places
 for different reasons, and it is only safe while they agree. They are written to
-agree by construction: the same dedup rule, the same null-repo exclusion, the
-same ``arg_max`` for a renamed repository, the same UTC handling. A test asserts
-the agreement rather than trusting this paragraph.
+agree by construction: the same dedup rule, the same null-repo exclusion, and the
+same ``arg_max`` for a renamed repository.
+
+``tests/test_aggregate_matches_marts.py`` reads the models out of ``dbt/models/``,
+runs them over the same fixture, and compares every count column.
+🔴 That test was written on 2026-08-22, four days after this paragraph claimed it
+existed. It did not. ⇒ 🔑 **"A test asserts this" is itself a claim, and it is the
+one kind of claim that makes every sentence beside it look checked.**
+
+⚠️ **One column deliberately does not match: event time.** The models convert with
+``at time zone 'UTC'``; this does not, because DuckDB routes that through ``pytz``
+and the package does not declare it. The counts agree exactly; the timestamps
+differ in representation, and the test names that rather than comparing around
+it.
 
 *The floor travels in the data.* ``repo_daily`` keeps only repository-days at or
 above ``min_events``. The cost of each choice was measured on one real full day

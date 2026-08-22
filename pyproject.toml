@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reporadar"
-version = "0.1.0"
-description = "Ecosystem intelligence for open source — live GitHub event ingestion with self-measured coverage, archive-backed deep history, and honest metrics"
+version = "1.1.0"
+description = "Ecosystem intelligence for open source — live GitHub event ingestion, an archive-backed Parquet lake, and daily aggregates kept as history"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 

@@ -1031,7 +1031,7 @@ def _reproduce_section(f: Figures) -> str:
     first, last = f.days[0], f.days[-1]
     steps = _shell(
         [
-            ("git clone <this repository> && cd reporadar", ""),
+            ("git clone https://github.com/deeason7/reporadar && cd reporadar", ""),
             ("make setup", "uv sync, plus the commit hooks"),
             ("", ""),
             ("cp .env.example .env", "set POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD"),
@@ -1105,6 +1105,8 @@ unchanged lake produces an identical file.</p>
 <p>This page is a file, not a service: it is generated from the lake, committed, and served as static
 HTML. The pipeline behind it is not hosted anywhere and is not intended to be — it runs locally, and
 reproducing it from the repository is the point. MIT licensed.</p>
+<p>Source, and the commands that rebuild every figure above:
+<a href="https://github.com/deeason7/reporadar">github.com/deeason7/reporadar</a>.</p>
 </footer>
 </main>
 </body>

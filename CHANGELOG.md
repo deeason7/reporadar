@@ -6,7 +6,26 @@ All notable changes to this project are documented here, per
 
 ## [Unreleased]
 
+### Added
+
+- `reporadar aggregate [DAY]` reduces one day of the public event archive to two Parquet files —
+  the ecosystem total and the repository-day — and a scheduled workflow runs it daily. A day of
+  raw events is ~325 MB, so a year is ~116 GB and cannot live in a repository; the aggregates are
+  ~558 KB on a busy day and answer the questions the raw events were kept for. The repository-day
+  floor of 20 events is written onto every row, because it defines which repositories a given day
+  can describe and a file must stay readable without finding the job that produced it.
+- `reporadar history-status` reports whether anything is still adding days, separating a history
+  that has stopped from one with gaps behind a current edge — they need different fixes. It prints
+  the number of days it read before any verdict, and names days whose volume falls under half the
+  median without failing on them, since an hour the publisher released short is a settled fact
+  rather than an unfinished job.
+- Fourteen days of aggregated history, 2026-08-08 to 2026-08-21: 42.8 M events across 241,962
+  repository-days.
+
 ### Changed
+
+- Package metadata no longer advertises "self-measured coverage". That estimator was withdrawn and
+  its module deleted, as the README has said since; the description had gone on claiming it.
 
 - Operator errors from the packaged `reporadar` command are now presented as a single line on
   stderr instead of a traceback. A missing setting, an absent file, or a database that is not
