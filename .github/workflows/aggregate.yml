@@ -169,6 +169,20 @@ jobs:
           if [ -z "$TARGET" ]; then
             TARGET="$(date -u -d yesterday +%Y-%m-%d 2>/dev/null || date -u -v-1d +%Y-%m-%d)"
           fi
+          # A commit message is permanent and public, and this one is built from
+          # an input. Moving the value out of the script body stopped it being
+          # executed; it did not stop it being *written down*. A run given a
+          # malformed day put that day, verbatim, into a message that can never
+          # be edited — found by testing the injection fix and reading what the
+          # commit actually said afterwards.
+          # ⇒ 🔑 Sanitising an input for one sink says nothing about the others.
+          # Anything that is not a plain ISO date is refused as a subject here;
+          # the aggregate step has already failed on it and named it in the log,
+          # which is where an arbitrary string belongs.
+          case "$TARGET" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) TARGET="an unparseable day" ;;
+          esac
           if [ "$AGG" = "success" ]; then
             git commit -m "data: aggregate $TARGET"
           else
