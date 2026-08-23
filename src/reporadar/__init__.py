@@ -10,4 +10,4 @@ error had no explanation, and an unexplained factor is not a weaker version of a
 right answer.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.0.0"

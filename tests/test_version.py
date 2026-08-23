@@ -27,3 +27,27 @@ def test_the_two_copies_of_the_version_agree() -> None:
     assert match.group(1) == __version__, (
         f"pyproject.toml says {match.group(1)}, reporadar.__version__ says {__version__}"
     )
+
+
+def test_the_declared_version_is_one_the_changelog_has_released() -> None:
+    """A version number is a claim that a release exists, and nothing was checking it.
+
+    ``pyproject.toml`` briefly declared ``1.1.0`` — a version with no tag and no
+    changelog entry, so a reader installing the package would be told they had a
+    release that was never cut. The check above compares the two *copies* of the
+    number and would pass on any value at all as long as both copies agreed.
+
+    ⇒ 🔑 *Two wrong copies of a number are consistent.* Unreleased work belongs in
+    ``[Unreleased]``; the declared version stays at the last release until a real
+    one is cut, which is an owner action rather than an edit.
+    """
+    import re
+    from pathlib import Path
+
+    changelog = (Path(__file__).resolve().parent.parent / "CHANGELOG.md").read_text()
+    released = re.findall(r"^## \[(\d+\.\d+\.\d+)\]", changelog, re.MULTILINE)
+    assert released, "the changelog declares no released version to check against"
+    assert __version__ in released, (
+        f"version {__version__} has no `## [{__version__}]` entry in CHANGELOG.md. "
+        f"Released versions are {released}. Unreleased work goes under [Unreleased]."
+    )
